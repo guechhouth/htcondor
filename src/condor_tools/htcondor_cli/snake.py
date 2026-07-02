@@ -315,14 +315,17 @@ class Status(Verb):
         if mgmt_id is None:
             print("Error: management ID is required")
             return
-        
+
         try:
+            # Query schedd only for management job info (elapsed time, status, iwd) once
+            mgmt_job_ad = self._get_mgmt_job_info(mgmt_id)
+            # IWD stores the directory where the job is submitted from
+            iwd = (mgmt_job_ad.get("Iwd") if mgmt_job_ad else None) or os.getcwd() # fallback on cwd
+
             # Find the jobdir via pointer file written at submit time
-            current_directory = os.getcwd()
-            pointer_path = Path(f"{current_directory}/.snakemake/htcondor/snakemake-htcondor-{mgmt_id}.json")
+            pointer_path = Path(iwd)/ f".snakemake/htcondor/snakemake-htcondor-{mgmt_id}.json"
             if not pointer_path.exists():
-                print(f"Error: No workflow pointer found for job {mgmt_id}")
-                print("Make sure you run 'htcondor snake status' from the same directory as 'htcondor snake submit'.")
+                print(f"Error: No workflow pointer found at {pointer_path}")
                 return
             
             with open(pointer_path) as f:
@@ -334,20 +337,19 @@ class Status(Verb):
 
             if not metadata_path.exists():
                 print(f"Error: Metadata not found at {metadata_path}")
-                print("Make sure you run from the directory where 'htcondor snake submit' was executed.")
                 return
             
             with open(metadata_path) as f:
                 metadata = json.load(f)
 
-            self._show_status(mgmt_id, metadata)
+            self._show_status(mgmt_id, metadata, mgmt_job_ad)
             
         except Exception as e:
             print(f"Error: Could not get status for job {mgmt_id}")
             print(f"Exception: {str(e)}")
             traceback.print_exc()
     
-    def _show_status(self, mgmt_id, metadata):
+    def _show_status(self, mgmt_id, metadata, mgmt_job_ad):
         """
         Read cached metadata and produce a human-readable status display.
 
@@ -360,9 +362,6 @@ class Status(Verb):
         Returns:
             None
         """
-        # Query schedd only for management job info (elapsed time, status)
-        mgmt_job_ad = self._get_mgmt_job_info(mgmt_id)
-        
         # Display using metadata for job statuses (efficient, no schedd queries)
         self._display_workflow_status(mgmt_id, metadata, mgmt_job_ad)
     
@@ -380,7 +379,7 @@ class Status(Verb):
         """
         try:
             schedd = htcondor.Schedd()
-            projection = ["JobStatus", "EnteredCurrentStatus", "QDate", "JobBatchName"]
+            projection = ["JobStatus", "EnteredCurrentStatus", "QDate", "JobBatchName", "Iwd"]
             jobs = schedd.query(constraint=f"ClusterId == {mgmt_id}", projection=projection)
             return jobs[0] if jobs else None
         except Exception as e:
@@ -428,11 +427,18 @@ class Status(Verb):
         total_nodes = len(jobs)
 
         # Get available status
-        total_idle = sum(1 for j in jobs.values() if j.get("status", "").lower() == "idle")
-        total_running = sum(1 for j in jobs.values() if j.get("status", "").lower() == "running")
-        total_completed = sum(1 for j in jobs.values() if j.get("status", "").lower() == "completed")
-        total_held = sum(1 for j in jobs.values() if j.get("status", "").lower() == "held")
-        total_removed = sum(1 for j in jobs.values() if j.get("status", "").lower() == "removed") # not sure if we need this to display
+        total_idle = total_running = total_completed = total_held = total_removed = 0
+        for j in jobs.values():
+            if j.get("status", "").lower() == "idle":
+                total_idle += 1
+            elif j.get("status", "").lower() == "running":
+                total_running += 1
+            elif j.get("status", "").lower() == "completed":
+                total_completed += 1
+            elif j.get("status", "").lower() == "held":
+                total_held += 1
+            elif j.get("status", "").lower() == "removed": # not sure if we need this to display
+                total_removed += 1
         
         # Submitted job summary
         if total_submitted > 0:
@@ -469,15 +475,15 @@ class Status(Verb):
             # Instead of total nodes like DAGMan, we filter out nodes that are not submitted so we change the working here a little bit
             print(f"DAG contains {executable_nodes} total executable node(s), of which:") 
             if total_completed:
-                print(f"    {colorize('[#]', Color.GREEN)} {colorize(str(total_completed), Color.GREEN)} {'has' if total_completed == 1 else 'have'} completed.")
+                print(f"    {colorize('[#]', Color.GREEN)} {total_completed} {'has' if total_completed == 1 else 'have'} completed.")
             if total_running:
-                print(f"    {colorize('[=]', Color.BLUE)} {colorize(str(total_running), Color.BLUE)} {'is' if total_running == 1 else 'are'} running.")
+                print(f"    {colorize('[=]', Color.BLUE)} {total_running} {'is' if total_running == 1 else 'are'} running.")
             # if total_idle:
             #     print(f"    [{Color.YELLOW}~{Color.END}] {total_idle} {'is' if total_idle == 1 else 'are'} submitted and waiting for resources.")
             if waiting_on_dag > 0:
-                print(f"    {colorize('[-]', Color.YELLOW)} {colorize(str(waiting_on_dag), Color.YELLOW)} {'is' if waiting_on_dag == 1 else 'are'} waiting on other nodes to finish.")
+                print(f"    {colorize('[-]', Color.YELLOW)} {waiting_on_dag} {'is' if waiting_on_dag == 1 else 'are'} waiting on other nodes to finish.")
             if total_held:
-                print(f"    {colorize('[!]', Color.RED)} {colorize(str(total_held), Color.RED)} {'is' if total_held == 1 else 'are'} held.")
+                print(f"    {colorize('[!]', Color.RED)} {total_held} {'is' if total_held == 1 else 'are'} held.")
         
         # Health status summary
         if workflow_complete:
