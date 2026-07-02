@@ -1,6 +1,5 @@
 import htcondor2 as htcondor
 import shutil
-import subprocess
 import sys
 import time
 import json
@@ -15,16 +14,7 @@ import os
 
 from htcondor_cli.noun import Noun
 from htcondor_cli.verb import Verb
-
-class Colors:
-    """ANSI color codes for terminal output"""
-    GREEN = '\033[92m'
-    BLUE = '\033[94m'
-    YELLOW = '\033[93m'
-    RED = '\033[91m'
-    CYAN = '\033[96m'
-    BOLD = '\033[1m'
-    END = '\033[0m'
+from htcondor2._utils.ansi import Color, colorize
 
 class Submit(Verb):
     """
@@ -479,27 +469,27 @@ class Status(Verb):
             # Instead of total nodes like DAGMan, we filter out nodes that are not submitted so we change the working here a little bit
             print(f"DAG contains {executable_nodes} total executable node(s), of which:") 
             if total_completed:
-                print(f"    [{Colors.GREEN}#{Colors.END}] {total_completed} {'has' if total_completed == 1 else 'have'} completed.")
+                print(f"    {colorize('[#]', Color.GREEN)} {colorize(str(total_completed), Color.GREEN)} {'has' if total_completed == 1 else 'have'} completed.")
             if total_running:
-                print(f"    [{Colors.BLUE}={Colors.END}] {total_running} {'is' if total_running == 1 else 'are'} running.")
+                print(f"    {colorize('[=]', Color.BLUE)} {colorize(str(total_running), Color.BLUE)} {'is' if total_running == 1 else 'are'} running.")
             # if total_idle:
-            #     print(f"    [{Colors.YELLOW}~{Colors.END}] {total_idle} {'is' if total_idle == 1 else 'are'} submitted and waiting for resources.")
+            #     print(f"    [{Color.YELLOW}~{Color.END}] {total_idle} {'is' if total_idle == 1 else 'are'} submitted and waiting for resources.")
             if waiting_on_dag > 0:
-                print(f"    [{Colors.YELLOW}-{Colors.END}] {waiting_on_dag} {'is' if waiting_on_dag == 1 else 'are'} waiting on other nodes to finish.")
+                print(f"    {colorize('[-]', Color.YELLOW)} {colorize(str(waiting_on_dag), Color.YELLOW)} {'is' if waiting_on_dag == 1 else 'are'} waiting on other nodes to finish.")
             if total_held:
-                print(f"    [{Colors.RED}!{Colors.END}] {total_held} {'is' if total_held == 1 else 'are'} held.")
+                print(f"    {colorize('[!]', Color.RED)} {colorize(str(total_held), Color.RED)} {'is' if total_held == 1 else 'are'} held.")
         
         # Health status summary
         if workflow_complete:
-            print(f"{Colors.GREEN}✓{Colors.END} Workflow has completed successfully.")
+            print(f"{colorize("✓", Color.GREEN)} Workflow has completed successfully.")
         elif total_held > 0:
-            print(f"{Colors.RED}⚠{Colors.END} Workflow has held jobs.")
+            print(f"{colorize("⚠", Color.RED)} Workflow has held jobs.")
         elif total_removed > 0:
-            print(f"{Colors.RED}✗{Colors.END} Some jobs have been removed.")
+            print(f"{colorize("✗", Color.RED)} Some jobs have been removed.")
         elif mgmt_job_ad and mgmt_job_ad.get("JobStatus") == 4:
-            print(f"{Colors.GREEN}✓{Colors.END} Workflow has completed.")
+            print(f"{colorize("✓", Color.GREEN)} Workflow has completed.")
         else:
-            print(f"{Colors.BLUE}→{Colors.END} Workflow is running normally.")
+            print(f"{colorize("→", Color.BLUE)} Workflow is running normally.")
         
         # Progress bar
         progress_total = executable_nodes or total_nodes
@@ -510,12 +500,12 @@ class Status(Verb):
             running_slots = int(total_running / progress_total * bar_width)
             waiting_slots = bar_width - completed_slots - running_slots
             
-            bar = (f"{Colors.GREEN}{'#' * completed_slots}{Colors.END}" +
-                   f"{Colors.BLUE}{'=' * running_slots}{Colors.END}" +
-                   f"{Colors.YELLOW}{'-' * waiting_slots}{Colors.END}")
+            bar = (f"{colorize('#' * completed_slots, Color.GREEN)}" +
+                   f"{colorize('=' * running_slots, Color.BLUE)}" +
+                   f"{colorize('-' * waiting_slots, Color.YELLOW)}")
 
             if workflow_complete:
-                print(f"[{Colors.GREEN}{'#' * bar_width}{Colors.END}] Workflow is 100% complete.")
+                print(f"[{colorize('#' * bar_width, Color.GREEN)}] Workflow is 100% complete.")
             else:
                 print(f"[{bar}] Workflow is {pct_completed:.1f}% complete.")
         
