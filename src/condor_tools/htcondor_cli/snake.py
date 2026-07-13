@@ -11,6 +11,7 @@ from pathlib import Path
 from htcondor_cli.noun import Noun
 from htcondor_cli.verb import Verb
 import traceback
+import getpass
 
 
 """
@@ -18,6 +19,8 @@ HTCondor CLI for running Snakemake workflow
 """
 from htcondor_cli.noun import Noun
 from htcondor_cli.verb import Verb
+
+JSM_HTC_SNAKE_SUBMIT = 6 
 
 class Submit(Verb):
     """
@@ -264,19 +267,92 @@ class Submit(Verb):
             
             # Specify getenv so the job uses the submitter's environment
             "getenv": "true",
-            
+
             # Management Job Name
             "JobBatchName": f"snakemake-mgmt-$(ClusterId)",
+
+            # Setting the remove signal to be SIGINT instead of SIGTERM because Snakemake internal 
+            # treat SIGTERM as graceful removal and will not trigger `cancel_jobs` method in the executor.
+            "remove_kill_sig": "SIGINT",
         })
         
         # Submit to HTCondor
         schedd = htcondor.Schedd()
+        # Set s_method to JSM_HTC_SNAKE_SUBMIT
+        submit_description.setSubmitMethod(JSM_HTC_SNAKE_SUBMIT, True)
+
         submit_result = schedd.submit(submit_description)
+        
         
         cluster_id = submit_result.cluster()
         print(f"Snakemake managment job submitted with JobID {cluster_id}.0")
         print(f"Logs can be found in {jobdir}")
 
+class Remove(Verb):
+    """
+    Remove associated running jobs given the management job ID
+    """
+    # Positional argument for the management ID
+    options = {
+        "mgmt_id": {
+            "args": ("mgmt_id",), # positional argument
+            "help": "Positional argument for a management JobID that oversees the entire workflow. Must be specified.",
+        },
+    }
+
+    def __init__(self, logger, mgmt_id=None, **options):
+        """
+        When `htcondor snake remove <mgmt_id>` is run, remove all jobs associated with the management job immediately.
+        
+        This also involves making sure that the id provided is the management job id and the jobs to be removed are under it.
+
+        Args:
+            logger: Logger object used for logging messages.
+            mgmt_id (str or int): Management job ClusterId for the workflow.
+            **options: Reserved for future options.
+
+        Returns:
+            None
+
+        Raises:
+        """
+        self.logger = logger
+
+        if mgmt_id is None:
+            print("Error: management ID is required")
+            return
+
+        try:
+            mgmt_id = int(mgmt_id)
+        except ValueError:
+            print("Management Job ID must be an integer.")
+            sys.exit(1)
+
+        # Verify that the management id given belongs to Snakemake process by checking job submit method
+
+        # Send the signal to the schedd to remove the management job -> pass to Snakemake process
+        # Instead of SIGTERM that is the default, we use SIGINT set as a classad in submit description
+        # because Snakemake internal does graceful removal with SIGTERM and will not trigger `cancel_jobs()`
+        # Note: running condor_rm for this job = sending SIGINT, which I think is okay for now since we are going to work on held command
+        try: 
+            schedd = htcondor.Schedd()
+            res = schedd.act(
+                htcondor.JobAction.Remove,
+                f"ClusterId == {mgmt_id} && JobSubmitMethod == {JSM_HTC_SNAKE_SUBMIT}",
+                reason=f"via htcondor snake remove (by user {getpass.getuser()})",
+            )
+            
+            # Check that the job was actually found and removed
+            if res.get("TotalSuccess", 0) > 0:
+                print(f"Removing management job {mgmt_id}; its associated jobs will be removed shortly after that.")
+            else:
+                print(
+                    f"Job {mgmt_id} was not found as a `htcondor snake submit` "
+                    "management job."
+                )
+        except Exception as e:
+            print(f"Could not remove the management job: {e}")
+            sys.exit(1)
 
 class Snake(Noun):
     """
@@ -286,6 +362,8 @@ class Snake(Noun):
     class submit(Submit):
         pass
 
+    class remove(Remove):
+        pass
     @classmethod
     def verbs(cls):
-        return [cls.submit] 
+        return [cls.submit, cls.remove] 
