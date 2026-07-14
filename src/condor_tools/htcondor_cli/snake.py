@@ -320,7 +320,7 @@ class Remove(Verb):
 
         if mgmt_id is None:
             print("Error: management ID is required")
-            return
+            sys.exit(1)
 
         try:
             mgmt_id = int(mgmt_id)
