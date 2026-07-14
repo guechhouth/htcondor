@@ -315,6 +315,7 @@ class Remove(Verb):
             None
 
         Raises:
+            RuntimeError: if the schedd cannot be reached or the removal request fails.
         """
         self.logger = logger
 
