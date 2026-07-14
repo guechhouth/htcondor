@@ -6,6 +6,16 @@ from htcondor_cli.snake import Submit
 class TestSnakemakeSubmit:
     """Test the submit class for snakemake submission"""
 
+    @pytest.fixture(autouse=True)
+    def mock_executor_plugin_installed(self):
+        """
+        Submit() requires snakemake_executor_plugin_htcondor.
+        pretend it's installed so these tests exercise argument handling instead
+        of the environment's package set.
+        """
+        with patch("htcondor_cli.snake.importlib.util.find_spec", return_value=MagicMock()):
+            yield
+
     # TEST 1: Normal working with all flags #
     def test_submit_with_all_required_flags(self, tmp_path):
         # temporary Snakefile
