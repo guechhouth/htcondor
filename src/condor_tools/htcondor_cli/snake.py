@@ -333,7 +333,7 @@ class Remove(Verb):
         # Send the signal to the schedd to remove the management job -> pass to Snakemake process
         # Instead of SIGTERM that is the default, we use SIGINT set as a classad in submit description
         # because Snakemake internal does graceful removal with SIGTERM and will not trigger `cancel_jobs()`
-        # Note: running condor_rm for this job = sending SIGINT, which I think is okay for now since we are going to work on held command
+        # Note: running condor_rm for this workflow = sending SIGINT, which I think is okay if we are going to work on the held command
         try: 
             schedd = htcondor.Schedd()
             res = schedd.act(
@@ -342,7 +342,7 @@ class Remove(Verb):
                 reason=f"via htcondor snake remove (by user {getpass.getuser()})",
             )
             
-            # Check that the job was actually found and removed
+            # Check that the job was actually found and removed = 1 here
             if res.get("TotalSuccess", 0) > 0:
                 print(f"Removing management job {mgmt_id}; its associated jobs will be removed shortly after that.")
             else:
@@ -350,7 +350,7 @@ class Remove(Verb):
                     f"Job {mgmt_id} was not found as a `htcondor snake submit` "
                     "management job."
                 )
-        except Exception as e:
+        except RuntimeError as e:
             print(f"Could not remove the management job: {e}")
             sys.exit(1)
 
