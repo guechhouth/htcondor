@@ -20,6 +20,16 @@ def mock_schedd():
 class TestSnakemakeRemove:
     """Test removing logic for htcondor snake remove"""
 
+    @pytest.fixture(autouse=True)
+    def mock_executor_plugin_installed(self):
+        """
+        Submit() requires snakemake_executor_plugin_htcondor.
+        pretend it's installed so these tests exercise argument handling instead
+        of the environment's package set.
+        """
+        with patch("htcondor_cli.snake.importlib.util.find_spec", return_value=MagicMock()):
+            yield
+
     def test_remove_mgmt_running(self, mock_schedd):
         """Valid snake-submitted mgmt job"""
         mock_schedd.act.return_value = {"TotalSuccess": 1, "TotalError": 0}
