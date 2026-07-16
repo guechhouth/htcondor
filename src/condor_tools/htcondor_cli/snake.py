@@ -314,7 +314,7 @@ class Status(Verb):
 
         if mgmt_id is None:
             print("Error: management ID is required")
-            return
+            sys.exit(1)
 
         try:
             # Query schedd only for management job info (elapsed time, status, iwd) once
@@ -326,7 +326,7 @@ class Status(Verb):
             pointer_path = Path(iwd)/ f".snakemake/htcondor/snakemake-htcondor-{mgmt_id}.json"
             if not pointer_path.exists():
                 print(f"Error: No workflow pointer found at {pointer_path}")
-                return
+                sys.exit(1)
             
             with open(pointer_path) as f:
                 pointer = json.load(f)
@@ -337,7 +337,7 @@ class Status(Verb):
 
             if not metadata_path.exists():
                 print(f"Error: Metadata not found at {metadata_path}")
-                return
+                sys.exit(1)
             
             with open(metadata_path) as f:
                 metadata = json.load(f)
