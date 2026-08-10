@@ -4,14 +4,12 @@ import shutil
 import subprocess
 import importlib.util
 import sys
+import os
+import signal
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-
-from htcondor_cli.noun import Noun
-from htcondor_cli.verb import Verb
 import traceback
-
 
 """
 HTCondor CLI for running Snakemake workflow
@@ -266,6 +264,11 @@ class Submit(Verb):
             
             # Specify getenv so the job uses the submitter's environment
             "getenv": "true",
+
+            # Inject mgmt_id at submit time so executor can read it immediately
+            # $(ClusterId) is expanded by HTCondor before the job starts, avoiding
+            # the race condition of schedd.edit() after submission
+            "environment": "SNAKEMAKE_MGMT_ID=$(ClusterId)",
             
             # Management Job Name
             "JobBatchName": f"snakemake-mgmt-$(ClusterId)",
@@ -279,6 +282,91 @@ class Submit(Verb):
         print(f"Snakemake managment job submitted with JobID {cluster_id}.0")
         print(f"Logs can be found in {jobdir}")
 
+class Halt(Verb):
+    """
+    Halt the progress of a workflow given the management job ID
+    """
+    options = {
+        "mgmt_id": {
+            "args": ("mgmt_id",),
+            "help": "Positional argument for a management JobID that oversees the entire workflow. Must be specified."
+        },
+    }
+
+    def __init__(self, logger, mgmt_id=None, **option):
+        """
+        When `htcondor snake halt <mgmt_id>` is run, pause the workflow by allowing 
+        the currently running jobs finish and stop any jobs that are not yet submitted.
+
+        Args:
+            logger: Logger object used for logging messages.
+            mgmt_id (str or int): Management job ClusterId for the workflow.
+            **options: Reserved for future options.
+
+        Returns:
+            None
+
+        Raises:
+            RuntimeError: if the schedd cannot be reached.
+            
+        """
+
+        self.logger = logger
+
+        if mgmt_id is None:
+            print("Error: management job ID is required")
+            sys.exit(1)
+        
+        try:
+            mgmt_id = int(mgmt_id)
+        except ValueError:
+            print("Management job ID must be an integer.")
+            sys.exit(1)
+        
+        # Querying the schedd for the saved PID: SnakeMgmtPID (what happen when are there two managment job?)
+
+        # To minimized TOCTOU, we will, at the same time, ask for the JobStatus together with SnakeMgmtPID
+        # and only send SIGTERM to this PID when the job is still running.
+        # TOCTOU still exists but less common in modern linux OS unless users are running
+        # in the containers or aps that are very busy.
+
+        try:
+            schedd = htcondor.Schedd()
+
+            # 1. Query SnakeMgmtPID
+            jobs = schedd.query(constraint=f"ClusterId == {mgmt_id}", projection=["JobStatus", "SnakeMgmtPID"])
+
+            if not jobs:
+                self.logger.error(f"No management job found with JobID {mgmt_id}.")
+                sys.exit(1)
+
+            target_pid = None
+            for job in jobs:
+                status = job.get("JobStatus")
+                # making sure it is actively running
+                if status == 2:
+                    target_pid = job.get("SnakeMgmtPID")
+                    break
+
+            if target_pid is None:
+                self.logger.warning(f"Management job {mgmt_id} is not currently running; nothing to halt.")
+                sys.exit(1)
+
+            # 2. Sending SIGTERM to management job.
+            # Snakemake catches SIGTERM and shuts down gracefully: it lets
+            # already-running jobs finish and stops submitting new ones.
+            try:
+                os.kill(target_pid, signal.SIGTERM)
+            except ProcessLookupError:
+                self.logger.warning(f"Management job {mgmt_id} process (PID {target_pid}) is no longer running.")
+                sys.exit(1)
+
+            print(f"Halting the management job {mgmt_id}.")
+
+        except Exception as e:
+            self.logger.error(f"Could not halt the management job: {e}")
+            sys.exit(1)
+
 
 class Snake(Noun):
     """
@@ -288,6 +376,9 @@ class Snake(Noun):
     class submit(Submit):
         pass
 
+    class halt(Halt):
+        pass
+
     @classmethod
     def verbs(cls):
-        return [cls.submit] 
+        return [cls.submit, cls.halt] 
