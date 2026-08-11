@@ -270,6 +270,11 @@ class Submit(Verb):
             # Specify getenv so the job uses the submitter's environment
             "getenv": "true",
 
+            # Inject mgmt_id at submit time so executor can read it immediately
+            # $(ClusterId) is expanded by HTCondor before the job starts, avoiding
+            # the race condition of schedd.edit() after submission
+            "environment": "SNAKEMAKE_MGMT_ID=$(ClusterId)",
+
             # Management Job Name
             "JobBatchName": f"snakemake-mgmt-$(ClusterId)",
 
@@ -298,6 +303,7 @@ class Remove(Verb):
     options = {
         "mgmt_id": {
             "args": ("mgmt_id",), # positional argument
+            "type": int,
             "help": "Positional argument for a management JobID that oversees the entire workflow. Must be specified.",
         },
     }
@@ -320,7 +326,7 @@ class Remove(Verb):
             RuntimeError: if the schedd cannot be reached or the removal request fails.
         """
         self.logger = logger
-
+        
         if mgmt_id is None:
             print("Error: management ID is required")
             sys.exit(1)
@@ -336,26 +342,27 @@ class Remove(Verb):
         # Send the signal to the schedd to remove the management job -> pass to Snakemake process
         # Instead of SIGTERM that is the default, we use SIGINT set as a classad in submit description
         # because Snakemake internal does graceful removal with SIGTERM and will not trigger `cancel_jobs()`
-        # Note: running condor_rm for this workflow = sending SIGINT, which I think is okay if we are going to work on the held command
-        try: 
-            schedd = htcondor.Schedd()
-            res = schedd.act(
-                htcondor.JobAction.Remove,
-                f"ClusterId == {mgmt_id} && JobSubmitMethod == {JSM_HTC_SNAKE_SUBMIT}",
-                reason=f"via htcondor snake remove (by user {getpass.getuser()})",
+        # Note: running condor_rm for this workflow = sending SIGINT, which I think is okay if we are going to work on the held command 
+        schedd = htcondor.Schedd()
+        res = schedd.act(
+            htcondor.JobAction.Remove,
+            f"(ClusterId == {mgmt_id} && JobSubmitMethod == {JSM_HTC_SNAKE_SUBMIT}) || SnakeManagerJobId == {mgmt_id}",
+            reason=f"via htcondor snake remove (by user {getpass.getuser()})",
+        )
+        
+        # Check that the job was actually found and removed = 1 here
+        total_success = res.get("TotalSuccess", 0)
+        total_error = res.get("TotalError", 0)
+
+        if total_success > 0:
+            self.logger.info(f"Removing management job {mgmt_id}; its associated jobs will be removed shortly after that.")
+        elif total_error > 0:
+            self.logger.warning(f"Failed to remove job {mgmt_id}: schedd reported {total_error} error(s).")
+        else:
+            self.logger.info(
+                f"Job {mgmt_id} was not found as a `htcondor snake submit` "
+                "management job."
             )
-            
-            # Check that the job was actually found and removed = 1 here
-            if res.get("TotalSuccess", 0) > 0:
-                print(f"Removing management job {mgmt_id}; its associated jobs will be removed shortly after that.")
-            else:
-                print(
-                    f"Job {mgmt_id} was not found as a `htcondor snake submit` "
-                    "management job."
-                )
-        except RuntimeError as e:
-            print(f"Could not remove the management job: {e}")
-            sys.exit(1)
 
 class Snake(Noun):
     """
