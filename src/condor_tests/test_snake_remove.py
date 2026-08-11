@@ -32,16 +32,20 @@ class TestSnakemakeRemove:
 
     def test_remove_mgmt_running(self, mock_schedd):
         """Valid snake-submitted mgmt job"""
+        mgmt_id = "2604"
+        mock_logger = MagicMock()
         mock_schedd.act.return_value = {"TotalSuccess": 1, "TotalError": 0}
 
-        Remove(logger=None, mgmt_id="2604")
+        Remove(logger=mock_logger, mgmt_id=mgmt_id)
 
         mock_schedd.act.assert_called_once()
         args, kwargs = mock_schedd.act.call_args
         constraint = args[1]
-        assert "ClusterId == 2604" in constraint
+        assert f"ClusterId == {mgmt_id}" in constraint
         assert f"JobSubmitMethod == {JSM_HTC_SNAKE_SUBMIT}" in constraint
+        assert f"SnakeManagerJobId == {mgmt_id}" in constraint
         assert kwargs.get("reason")
+        mock_logger.info.assert_called_once()
 
     def test_remove_without_mgmt_id(self, mock_schedd):
         """Test behavior when mgmt id is not provided"""
@@ -57,18 +61,20 @@ class TestSnakemakeRemove:
 
     def test_remove_non_existent_job(self, mock_schedd):
         """Test running the command when no workflow is running"""
+        mock_logger = MagicMock()
         mock_schedd.act.return_value = {"TotalSuccess": 0, "TotalError": 0}
 
-        Remove(logger=None, mgmt_id="9999")
+        Remove(logger=mock_logger, mgmt_id="9999")
 
         mock_schedd.act.assert_called_once()
+        mock_logger.info.assert_called_once()
 
     def test_remove_schedd_exception(self, mock_schedd):
-        """Test that exception is caught appropriately if calling schedd failed"""
+        """Test that a schedd failure propagates instead of being swallowed"""
         mock_schedd.act.side_effect = RuntimeError("Schedd connection failed")
 
-        with pytest.raises(SystemExit):
-            Remove(logger=None, mgmt_id="2604")
+        with pytest.raises(RuntimeError):
+            Remove(logger=MagicMock(), mgmt_id="2604")
 
     def test_remove_sub_job(self, mock_schedd):
         """Test when the id provided is the sub job and not the management job.
@@ -76,8 +82,10 @@ class TestSnakemakeRemove:
         The JobSubmitMethod constraint excludes it, so schedd.act() should reports no
         successes even though the ClusterId itself exists.
         """
+        mock_logger = MagicMock()
         mock_schedd.act.return_value = {"TotalSuccess": 0, "TotalError": 0}
 
-        Remove(logger=None, mgmt_id="2605")
+        Remove(logger=mock_logger, mgmt_id="2605")
 
         mock_schedd.act.assert_called_once()
+        mock_logger.info.assert_called_once()
