@@ -21,6 +21,17 @@ class TestSnakemakeSubmit:
             yield
 
 
+    @pytest.fixture(autouse=True)
+    def mock_executor_plugin_installed(self):
+        """
+        Submit() requires snakemake_executor_plugin_htcondor.
+        pretend it's installed so these tests exercise argument handling instead
+        of the environment's package set.
+        """
+        with patch("htcondor_cli.snake.importlib.util.find_spec", return_value=MagicMock()):
+            yield
+
+            
     # === INTEGRATION TESTS: Argument parsing through REMAINDER ==="
 
     def test_submit_extract_jobdir_after_snakefile_from_remainder(self, tmp_path):
