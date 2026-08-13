@@ -242,8 +242,8 @@ Requires: systemd-libs
 Requires: rsync
 
 # Require tested Pelican packages
-Requires: (pelican >= 7.25.0 or pelican-debug >= 7.25.0)
-Requires: pelican-osdf-compat >= 7.25.0
+Requires: (pelican >= 7.26.0 or pelican-debug >= 7.26.0)
+Requires: pelican-osdf-compat >= 7.26.0
 
 %if ! 0%{?amzn} && "%{os_release_id}" != "sles"
 # Require tested Apptainer
@@ -251,11 +251,7 @@ Requires: pelican-osdf-compat >= 7.25.0
 # Unfortunately, Apptainer is lagging behind on openSUSE 15
 Requires: apptainer >= 1.4.5
 %else
-%if 0%{?rhel} == 10
-Requires: apptainer >= 1.5.0
-%else
-Requires: apptainer >= 1.5.1
-%endif
+Requires: apptainer >= 1.5.3
 %endif
 %endif
 
@@ -1129,6 +1125,7 @@ rm -rf %{buildroot}
 %config %_sysconfdir/blahp/lsf_local_submit_attributes.sh
 %config %_sysconfdir/blahp/nqs_local_submit_attributes.sh
 %config %_sysconfdir/blahp/pbs_local_submit_attributes.sh
+%config %_sysconfdir/blahp/sfapi_local_submit_attributes.sh
 %config %_sysconfdir/blahp/sge_local_submit_attributes.sh
 %config %_sysconfdir/blahp/slurm_local_submit_attributes.sh
 %_bindir/blahpd
@@ -1336,6 +1333,33 @@ fi
 # configuration
 
 %changelog
+* Mon Jul 20 2026 Tim Theisen <tim@cs.wisc.edu> - 25.12.2-1
+- Maintains a job index to speed up condor history queries
+- Can now set a duration for a user's floor or priority factor
+- DAGMan will go into cool-down if it fails to launch
+- Improved column headers for condor_top
+- Audit log is now enabled by default on the Access Point
+- Fixed 25.11.0 bug that causes unbounded growth in the accountant log
+
+* Mon Jul 06 2026 Tim Theisen <tim@cs.wisc.edu> - 25.0.12-1
+- All changes in 24.12.22
+
+* Mon Jul 06 2026 Tim Theisen <tim@cs.wisc.edu> - 24.12.22-1
+- Fix rare job router crash when removing a recently routed job
+
+* Mon Jul 06 2026 Tim Theisen <tim@cs.wisc.edu> - 24.0.22-1
+- Fix for security issue
+- https://htcondor.org/security/vulnerabilities/HTCONDOR-2026-0001.html
+- Fix a bug that could cause the arc_gahp to crash
+- Reduce the size of Python wheels by 84% by removing debug symbols
+- Fix issue when tools could infinitely loop when using trust on first use
+- HTCondor tarballs now contain Apptainer 1.5.2
+
+* Mon Jul 06 2026 Tim Theisen <tim@cs.wisc.edu> - 25.11.1-1
+- Fix for security issue
+- https://htcondor.org/security/vulnerabilities/HTCONDOR-2026-0001.html
+- Fixed bug where the negotiator's accountant log grows without bound
+
 * Wed Jun 10 2026 Tim Theisen <tim@cs.wisc.edu> - 25.11.0-1
 - Prevent one user's many file transfers from halting matches for all users
 - condor_watch_q will gather DAGs that started after it did
