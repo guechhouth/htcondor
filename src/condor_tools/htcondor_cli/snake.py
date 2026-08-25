@@ -1,5 +1,8 @@
+import argparse
 import htcondor2 as htcondor
 import shutil
+import subprocess
+import importlib.util
 import sys
 import time
 import json
@@ -20,7 +23,7 @@ class Submit(Verb):
     """
     Submit a local universe job and Snakemake jobs when run.
     """
-    # command-line argument configurations
+    # Command-line argument configurations
     options = {
         "jobdir": {
             "args": ("--jobdir",),
@@ -31,7 +34,7 @@ class Submit(Verb):
             "args": ("snakemake_args",),
             "nargs": argparse.REMAINDER,
             "help": "Snakefile followed by optional snakemake arguments. Usage: [--jobdir DIR] [Snakefile] [-- snakemake_args]. Snakefile and --jobdir must come before the -- separator.",
-        }
+        },
     }
 
     def __init__(self, logger, snakefile=None, snakemake_args=None, **options):
@@ -58,9 +61,18 @@ class Submit(Verb):
             FileNotFoundError: if the resolved Snakefile does not exist.
             RuntimeError: if Snakemake executable cannot be found or submission fails.
         """
+        # Check for the presence of the executor plugin
+        if importlib.util.find_spec("snakemake_executor_plugin_htcondor") is None:
+            raise RuntimeError(
+                "The 'snakemake-executor-plugin-htcondor' plugin is required but not yet installed.\n"
+                "Install it with: pip install snakemake-executor-plugin-htcondor"
+            )
+            
+
         if snakefile is None:
             # Extract --jobdir from snakemake_args if present
             snakemake_args = self._extract_jobdir_from_remainder(snakemake_args, options)
+            
             if snakemake_args and snakemake_args[0] == '--':
                 # When no snakefile given, we can just strip the separator
                 snakemake_args = snakemake_args[1:]
@@ -71,18 +83,20 @@ class Submit(Verb):
                 if snakemake_args and snakemake_args[0] == '--':
                     snakemake_args = snakemake_args[1:]
 
-        # Basic validations of CLI
-        snakefile = self._validate_snakefile(snakefile)
+
         jobdir = self._setup_jobdir(options)
 
-        # submit a local universe job
+        # Basic validations for Snakefile
+        snakefile = self._validate_snakefile(snakefile)
+                    
+        # Submit a local universe job
         try:
             self._submit_local(snakefile, jobdir, snakemake_args)
         except Exception as e:
             print("Error: Could not submit local universe job.")
             print(f"Details:", str(e))
             sys.exit(1)
-        
+    
     def _extract_jobdir_from_remainder(self, snakemake_args, options):
         """
         Extract any `--jobdir` occurrences from the remainder `snakemake_args`.
@@ -103,46 +117,42 @@ class Submit(Verb):
             `--jobdir` flags and their values removed. Returns the original
             `snakemake_args` if no `--jobdir` was found.
         """
+
         if not snakemake_args:
             return snakemake_args
         
         # Find the position of -- separator
-        separator_index = None
         try:
             separator_index = snakemake_args.index('--')
         except ValueError:
-            pass  # No separator found
+            separator_index = None
         
         # Scan and extract all --jobdir occurrences from before the separator
         scan_range = separator_index if separator_index is not None else len(snakemake_args)
         
         # Collect all --jobdir values (last one will be used)
+        filtered_args = []
         jobdir_value_in_remainder = None
-        indices_to_skip = set()
-        
         i = 0
-        while i < len(snakemake_args):
-            if i < scan_range and snakemake_args[i] == '--jobdir' and i + 1 < scan_range:
-                # Found --jobdir before the separator
-                # Unintended behavior if value of --jobdir is not specified
-                jobdir_value_in_remainder = snakemake_args[i + 1]  # Update to latest value
-                indices_to_skip.add(i)      # Mark --jobdir for removal
-                indices_to_skip.add(i + 1)  # Mark its value for removal
+
+        # For repeated specifications of --jobdir, the last one wins
+        while i < scan_range:
+            if snakemake_args[i] == '--jobdir':
+                if i + 1 >= scan_range or snakemake_args[i+1].startswith("-"):
+                    raise ValueError("--jobdir requires a valid directory string value")
+                jobdir_value_in_remainder = snakemake_args[i+1]
                 i += 2
             else:
+                filtered_args.append(snakemake_args[i])
                 i += 1
         
-        # If we found any --jobdir in REMAINDER, rebuild filtered args
-        if indices_to_skip:
-            options["jobdir"] = jobdir_value_in_remainder
-            filtered_args = []
-            for i in range(len(snakemake_args)):
-                if i not in indices_to_skip:
-                    filtered_args.append(snakemake_args[i])
-            return filtered_args
-        
-        return snakemake_args
+        if jobdir_value_in_remainder is None:
+            return snakemake_args
 
+        options["jobdir"] = jobdir_value_in_remainder
+        filtered_args.extend(snakemake_args[scan_range:])
+        return filtered_args
+    
     def _validate_snakefile(self, snakefile):
         """
         Validate and normalize the given snakefile path.
@@ -159,16 +169,18 @@ class Submit(Verb):
         Raises:
             FileNotFoundError: If the resolved path does not exist.
         """
-        # if snakefile is not provided
+        
+        # If snakefile is not provided, use default
         if snakefile is None:
             snakefile = "Snakefile"
-        snakefile = Path(snakefile)
-        if not snakefile.exists():
+        
+        snakefile_path = Path(snakefile)
+        if not snakefile_path.exists():
             raise FileNotFoundError(
                 f"Could not find Snakefile: {snakefile}\n"
-                f"Make sure to provide the path to the Snakefile or place it at the submit directory or "
+                f"Make sure to provide the correct path to the Snakefile or place 'Snakefile' in the current directory."
             )
-        return snakefile
+        return snakefile_path
 
     def _setup_jobdir(self, options):
         """
@@ -181,11 +193,12 @@ class Submit(Verb):
         Returns:
             pathlib.Path: Path to the created or existing job directory.
         """
+
         if options.get("jobdir"):
             jobdir = Path(options.get("jobdir"))
         else:
-            jobdir = Path.cwd() / "logs"
-
+            jobdir = Path.cwd() / "logs" # default name if jobdir is not provided
+        
         jobdir.mkdir(parents=True, exist_ok=True)
         return jobdir
 
@@ -226,23 +239,25 @@ class Submit(Verb):
         args_list = [
             f"-s {snakefile}",
             f"--executor htcondor",
-            f"--htcondor-jobdir {jobdir}"
+            f"--htcondor-jobdir {jobdir}",
         ]
-        
-        # Add any additional snakemake args
+
+        # Append any additional snakemake args passed after the -- separator
         if snakemake_args:
             args_list.extend(snakemake_args)
-        
+
         arguments = " ".join(args_list)
-        
+
+        request_memory = htcondor.param.get("SNAKEMAKE_MANAGER_REQUEST_MEM", "512MB")
+
         submit_description = htcondor.Submit({
             "executable": snakemake_path,
             "arguments": arguments,
             "universe": "local",
             "request_disk": "512MB",
             "request_cpus": 1,
-            "request_memory": 512,
-
+            "request_memory": request_memory,
+            
             # Set up logging
             "log": f"{jobdir}/snakemake-mgmt-$(ClusterId).log",
             "output": f"{jobdir}/snakemake-mgmt-$(ClusterId).out",
@@ -250,30 +265,17 @@ class Submit(Verb):
 
             # Specify getenv so the job uses the submitter's environment
             "getenv": "true",
-
-            # Inject mgmt_id at submit time so executor can read it immediately
-            # $(ClusterId) is expanded by HTCondor before the job starts, avoiding
-            # the race condition of schedd.edit() after submission
-            "environment": "SNAKEMAKE_MGMT_ID=$(ClusterId)",
-
-            "JobBatchName": "snakemake-mgmt-$(ClusterId)",
+            
+            # Management Job Name
+            "JobBatchName": f"snakemake-mgmt-$(ClusterId)",
         })
 
         # Submit to HTCondor
         schedd = htcondor.Schedd()
         submit_result = schedd.submit(submit_description)
-
+        
         cluster_id = submit_result.cluster()
-
-        # Write a pointer so `htcondor snake status <mgmt_id` can find the right jobdir
-        # Pointer is at original htcondor log path (./snakemake/htcondor)        
-        pointer = {"jobdir": str(jobdir.resolve())}
-        pointer_dir = Path(".snakemake/htcondor")
-        pointer_dir.mkdir(parents=True, exist_ok=True)
-        pointer_path = pointer_dir / f"snakemake-htcondor-{cluster_id}.json"
-        pointer_path.write_text(json.dumps(pointer))
-
-        print(f"Snakemake management job submitted with JobID {cluster_id}.0")
+        print(f"Snakemake managment job submitted with JobID {cluster_id}.0")
         print(f"Logs can be found in {jobdir}")
 
 class Status(Verb):
