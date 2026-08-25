@@ -1,19 +1,16 @@
 import argparse
 import htcondor2 as htcondor
 import shutil
-import subprocess
 import importlib.util
 import sys
 import time
 import json
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from htcondor_cli.noun import Noun
 from htcondor_cli.verb import Verb
 import traceback
-import re
 import argparse
-import os
 
 from htcondor_cli.noun import Noun
 from htcondor_cli.verb import Verb
@@ -191,14 +188,19 @@ class Submit(Verb):
                 "jobdir" key its value will be used as the job directory.
 
         Returns:
-            pathlib.Path: Path to the created or existing job directory.
+            pathlib.Path: Absolute path to the created or existing job
+            directory. Resolved to absolute here since
+            it's later embedded in the management job's ClassAd
+            (`HTCondorSnakeMetadata`) and must resolve correctly regardless
+            of the working directory `status` is later run from.
         """
 
         if options.get("jobdir"):
             jobdir = Path(options.get("jobdir"))
         else:
-            jobdir = Path.cwd() / "logs" # default name if jobdir is not provided
-        
+            jobdir = Path.cwd() / "logs"
+
+        jobdir = jobdir.resolve()
         jobdir.mkdir(parents=True, exist_ok=True)
         return jobdir
 
@@ -208,9 +210,10 @@ class Submit(Verb):
         Submit Snakemake as an HTCondor local-universe management job.
 
         This method discovers the Snakemake executable, constructs a
-        Submit description for HTCondor, submits the job, writes a pointer
-        file into `.snakemake/htcondor` so other commands (eg. `status`)
-        can locate the workflow job directory, and prints submission info.
+        Submit description for HTCondor, submits the job, and prints
+        submission info. The metadata file path is set as a custom
+        ClassAd attribute (`HTCondorSnakeMetadata`) on the management
+        job so other commands (eg. `status`) can locate it via the schedd.
 
         Args:
             snakefile (pathlib.Path or str): Path to the Snakefile to run.
@@ -265,9 +268,12 @@ class Submit(Verb):
 
             # Specify getenv so the job uses the submitter's environment
             "getenv": "true",
-            
-            # Management Job Name
-            "JobBatchName": f"snakemake-mgmt-$(ClusterId)",
+
+            "JobBatchName": "snakemake-mgmt-$(ClusterId)",
+
+            # Pointer to the metadata file, set on the ClassAd so `htcondor snake
+            # status <mgmt_id>` can read it straight from the schedd. 
+            "MY.HTCondorSnakeMetadata": f'"{jobdir}/snakemake-metadata-$(ClusterId).json"',
         })
 
         # Submit to HTCondor
@@ -275,19 +281,22 @@ class Submit(Verb):
         submit_result = schedd.submit(submit_description)
         
         cluster_id = submit_result.cluster()
-        print(f"Snakemake managment job submitted with JobID {cluster_id}.0")
+
+        print(f"Snakemake management job submitted with JobID {cluster_id}.0")
         print(f"Logs can be found in {jobdir}")
 
 class Status(Verb):
     """
     Shows the current status of a workflow when given the management's ID.
-    Reads from cached metadata file instead of querying schedd for efficiency.
-    Jobdir is auto-discovered from metadata.
+    The metadata file path is read from the `HTCondorSnakeMetadata` ClassAd
+    attribute (set at submit time), then the cached metadata file itself is
+    read for the actual status details.
     """
     # Command-line argument configurations
     options = {
         "mgmt_id": {
             "args": ("mgmt_id",), # positional argument
+            "type": int,
             "help": "Positional argument for a management JobID that oversees the entire workflow. Must be specified.",
         },
     }
@@ -296,10 +305,10 @@ class Status(Verb):
         """
         Initialize a status viewer and display workflow status.
 
-        This constructor locates the pointer file written at submit time to
-        discover the job directory, reads cached metadata, and prints a
-        user-friendly status summary. It avoids expensive schedd queries by
-        using the cached metadata file.
+        This constructor queries the schedd once for the management job's
+        ClassAd (which includes the `HTCondorSnakeMetadata` pointer set at
+        submit time), reads the cached metadata file it points to, and
+        prints a user-friendly status summary.
 
         Args:
             logger: Logger instance for logging messages.
@@ -310,7 +319,7 @@ class Status(Verb):
             None
 
         Raises:
-            FileNotFoundError: If the pointer or metadata file cannot be found.
+            FileNotFoundError: If the metadata file cannot be found.
         """
         self.logger = logger
 
@@ -319,37 +328,32 @@ class Status(Verb):
             sys.exit(1)
 
         try:
-            # Query schedd only for management job info (elapsed time, status, iwd) once
+            # Query schedd once for management job info (elapsed time, status,
+            # and the HTCondorSnakeMetadata pointer set at submit time)
             mgmt_job_ad = self._get_mgmt_job_info(mgmt_id)
-            # IWD stores the directory where the job is submitted from
-            iwd = (mgmt_job_ad.get("Iwd") if mgmt_job_ad else None) or os.getcwd() # fallback on cwd
 
-            # Find the jobdir via pointer file written at submit time
-            pointer_path = Path(iwd)/ f".snakemake/htcondor/snakemake-htcondor-{mgmt_id}.json"
-            if not pointer_path.exists():
-                print(f"Error: No workflow pointer found at {pointer_path}")
+            metadata_path_str = mgmt_job_ad.get("HTCondorSnakeMetadata") if mgmt_job_ad else None
+            if not metadata_path_str:
+                self.logger.error(
+                    f"No metadata path found for management job with id {mgmt_id}.\nPossible causes: the ID is "
+                    f"wrong, the job has already completed and left the queue, or it wasn't "
+                    f"submitted via 'htcondor snake submit'."
+                )
                 sys.exit(1)
-            
-            with open(pointer_path) as f:
-                pointer = json.load(f)
-            
-            # Get jobdir and find metadata path
-            jobdir = Path(pointer["jobdir"])
-            metadata_path = jobdir/ f"snakemake-metadata-{mgmt_id}.json"
+            metadata_path = Path(metadata_path_str)
 
             if not metadata_path.exists():
-                print(f"Error: Metadata not found at {metadata_path}")
+                self.logger.error(f"Metadata not found at {metadata_path}")
                 sys.exit(1)
-            
+
             with open(metadata_path) as f:
                 metadata = json.load(f)
 
             self._show_status(mgmt_id, metadata, mgmt_job_ad)
-            
+
         except Exception as e:
-            print(f"Error: Could not get status for job {mgmt_id}")
-            print(f"Exception: {str(e)}")
-            traceback.print_exc()
+            self.logger.error(f"Could not get status for job {mgmt_id} with an exception: {str(e)}")
+            self.logger.debug(traceback.format_exc())
     
     def _show_status(self, mgmt_id, metadata, mgmt_job_ad):
         """
@@ -376,17 +380,17 @@ class Status(Verb):
 
         Returns:
             dict or None: A job ad dict with keys such as ``JobStatus``,
-            ``EnteredCurrentStatus``, ``QDate``, and ``JobBatchName`` if the
-            job is found; otherwise ``None``.
+            ``EnteredCurrentStatus``, ``QDate``, ``JobBatchName``, and
+            ``HTCondorSnakeMetadata`` (the metadata file pointer set at
+            submit time) if the job is found; otherwise ``None``.
         """
         try:
             schedd = htcondor.Schedd()
-            projection = ["JobStatus", "EnteredCurrentStatus", "QDate", "JobBatchName", "Iwd"]
+            projection = ["JobStatus", "EnteredCurrentStatus", "QDate", "JobBatchName", "HTCondorSnakeMetadata"]
             jobs = schedd.query(constraint=f"ClusterId == {mgmt_id}", projection=projection)
             return jobs[0] if jobs else None
         except Exception as e:
-            # If schedd query fails, continue anyway - metadata has the important info
-            print(f"Warning: Could not query schedd for management job info: {e}")
+            self.logger.warning(f"Could not query schedd for management job info: {e}")
             return None
         
     def _display_workflow_status(self, mgmt_id, metadata, mgmt_job_ad=None):
@@ -489,15 +493,15 @@ class Status(Verb):
         
         # Health status summary
         if workflow_complete:
-            print(f"{colorize("✓", Color.GREEN)} Workflow has completed successfully.")
+            print(f"{colorize('✓', Color.GREEN)} Workflow has completed successfully.")
         elif total_held > 0:
-            print(f"{colorize("⚠", Color.RED)} Workflow has held jobs.")
+            print(f"{colorize('⚠', Color.RED)} Workflow has held jobs.")
         elif total_removed > 0:
-            print(f"{colorize("✗", Color.RED)} Some jobs have been removed.")
+            print(f"{colorize('✗', Color.RED)} Some jobs have been removed.")
         elif mgmt_job_ad and mgmt_job_ad.get("JobStatus") == 4:
-            print(f"{colorize("✓", Color.GREEN)} Workflow has completed.")
+            print(f"{colorize('✓', Color.GREEN)} Workflow has completed.")
         else:
-            print(f"{colorize("→", Color.BLUE)} Workflow is running normally.")
+            print(f"{colorize('→', Color.BLUE)} Workflow is running normally.")
         
         # Progress bar
         progress_total = executable_nodes or total_nodes

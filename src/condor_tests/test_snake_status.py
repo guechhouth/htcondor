@@ -1,7 +1,6 @@
 #!/usr/bin/env pytest
 
 import pytest
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 from htcondor_cli.snake import Status
 import json
@@ -26,17 +25,18 @@ class TestSnakemakeStatus:
             Status(logger=None, mgmt_id=None)
         mock_schedd.query.assert_not_called()
     
-    def test_get_mgmt_info_schedd_exception(self, mock_schedd, capsys):
+    def test_get_mgmt_info_schedd_exception(self, mock_schedd):
         """Test that exception is caught appropriately if calling schedd failed"""
         mock_schedd.query.side_effect = RuntimeError("Schedd connection failed")
+        mock_logger = MagicMock()
 
         # skipping __init__ as we are testing only one helper method
         status = Status.__new__(Status)
+        status.logger = mock_logger # set directly
         res = status._get_mgmt_job_info("2604")
 
         assert res is None
-        captured = capsys.readouterr() # built in pytest fixture
-        assert "Could not query schedd" in captured.out
+        mock_logger.warning.assert_called_once() # could not query schedd
 
     def test_get_mgmt_info_no_jobs_found(self, mock_schedd):
         """Test job that does not exist"""
@@ -46,67 +46,54 @@ class TestSnakemakeStatus:
         res = status._get_mgmt_job_info("9999")
 
         assert res is None
-
-    def test_status_pointer_file_not_found(self, mock_schedd, capsys, tmp_path):
-        """Test pointer file missing"""
-        mock_schedd.query.return_value = []
-
-        with patch("os.getcwd", return_value=str(tmp_path)):
-            with pytest.raises(SystemExit):
-                Status(logger=None, mgmt_id="2604")
-        
-        captured = capsys.readouterr()
-        assert "No workflow pointer found" in captured.out
     
-    def test_status_metadata_file_not_found(self, mock_schedd, capsys, tmp_path):
-        """Test metadata file not found although the pointer exist"""
-        mock_schedd.query.return_value = []
-        pointer_dir = tmp_path/".snakemake"/"htcondor"
-        pointer_dir.mkdir(parents=True)
-        jobdir = tmp_path/"logs"
-        jobdir.mkdir()
-        (pointer_dir/"snakemake-htcondor-2604.json").write_text(json.dumps({"jobdir": str(jobdir)}))
+    def test_status_no_metadata_pointer_on_job_ad(self, mock_schedd, capsys):
+        """Test behavior when the management job ad has no HTCondorSnakeMetadata attribute"""
+        mock_schedd.query.return_value = [{"JobStatus": 2}]
+        mock_logger = MagicMock()
 
-        with patch("os.getcwd", return_value=str(tmp_path)):
-            with pytest.raises(SystemExit):
-                Status(logger=None, mgmt_id="2604")
-        
-        captured = capsys.readouterr()
-        assert "Metadata not found" in captured.out
-        
-    def test_status_malformed_metadata_json(self, mock_schedd, capsys, tmp_path):
-        """Test metadata file containing invalid JSON"""
-        mock_schedd.query.return_value = []
-        pointer_dir = tmp_path/".snakemake"/"htcondor"
-        pointer_dir.mkdir(parents=True)
-        jobdir = tmp_path/"logs"
-        jobdir.mkdir()
-        (pointer_dir/"snakemake-htcondor-2604.json").write_text(json.dumps({"jobdir": str(jobdir)}))
+        with pytest.raises(SystemExit):
+            Status(logger=mock_logger, mgmt_id="2604")
 
-        (jobdir/"snakemake-metadata-2604.json").write_text("{not a valid json}")
+        mock_logger.error.assert_called_once() # No metadata file path found
 
-        with patch("os.getcwd", return_value=str(tmp_path)):
-            Status(logger=None, mgmt_id="2604")
-
-        captured = capsys.readouterr()
-        assert "Could not get status" in captured.out
-    
-    def test_status_valid_full_flow(self, mock_schedd, tmp_path):
-        """Test when normal working behavior"""
-        mock_schedd.query.return_value = []
-        pointer_dir = tmp_path / ".snakemake" / "htcondor"
-        pointer_dir.mkdir(parents=True)
+    def test_status_metadata_file_not_found(self, mock_schedd, tmp_path):
+        """Test metadata file not found even though the job ad has a pointer"""
+        mock_logger = MagicMock()
         jobdir = tmp_path / "logs"
         jobdir.mkdir()
-        (pointer_dir / "snakemake-htcondor-2604.json").write_text(
-            json.dumps({"jobdir": str(jobdir)})
-        )
-        metadata = {"dag_nodes": 3, "jobs": {}}
-        (jobdir / "snakemake-metadata-2604.json").write_text(json.dumps(metadata))
+        metadata_path = jobdir / "snakemake-metadata-2604.json"
+        mock_schedd.query.return_value = [{"HTCondorSnakeMetadata": str(metadata_path)}]
 
-        with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch.object(Status, "_show_status") as mock_show:
-                Status(logger=None, mgmt_id="2604")
+        with pytest.raises(SystemExit):
+            Status(logger=mock_logger, mgmt_id="2604")
+
+        mock_logger.error.assert_called_once() # Metadata not found
+
+    def test_status_malformed_metadata_json(self, mock_schedd, tmp_path):
+        """Test metadata file containing invalid JSON"""
+        mock_logger = MagicMock()
+        jobdir = tmp_path / "logs"
+        jobdir.mkdir()
+        metadata_path = jobdir / "snakemake-metadata-2604.json"
+        metadata_path.write_text("{not a valid json}")
+        mock_schedd.query.return_value = [{"HTCondorSnakeMetadata": str(metadata_path)}]
+
+        Status(logger=mock_logger, mgmt_id="2604")
+
+        mock_logger.error.assert_called_once() # could not get status for job
+
+    def test_status_valid_full_flow(self, mock_schedd, tmp_path):
+        """Test when normal working behavior"""
+        jobdir = tmp_path / "logs"
+        jobdir.mkdir()
+        metadata = {"dag_nodes": 3, "jobs": {}}
+        metadata_path = jobdir / "snakemake-metadata-2604.json"
+        metadata_path.write_text(json.dumps(metadata))
+        mock_schedd.query.return_value = [{"HTCondorSnakeMetadata": str(metadata_path)}]
+
+        with patch.object(Status, "_show_status") as mock_show:
+            Status(logger=None, mgmt_id="2604")
 
         mock_show.assert_called_once()
         args, kwargs = mock_show.call_args
