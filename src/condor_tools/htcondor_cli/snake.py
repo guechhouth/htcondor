@@ -1,15 +1,15 @@
 import argparse
 import htcondor2 as htcondor
 import shutil
-import subprocess
 import importlib.util
 import sys
 import os
 import signal
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 import traceback
+import argparse
 
 """
 HTCondor CLI for running Snakemake workflow
@@ -189,14 +189,19 @@ class Submit(Verb):
                 "jobdir" key its value will be used as the job directory.
 
         Returns:
-            pathlib.Path: Path to the created or existing job directory.
+            pathlib.Path: Absolute path to the created or existing job
+            directory. Resolved to absolute here since
+            it's later embedded in the management job's ClassAd
+            (`HTCondorSnakeMetadata`) and must resolve correctly regardless
+            of the working directory `status` is later run from.
         """
 
         if options.get("jobdir"):
             jobdir = Path(options.get("jobdir"))
         else:
             jobdir = Path.cwd() / "logs" # default name if jobdir is not provided
-        
+
+        jobdir = jobdir.resolve()
         jobdir.mkdir(parents=True, exist_ok=True)
         return jobdir
 
@@ -206,9 +211,10 @@ class Submit(Verb):
         Submit Snakemake as an HTCondor local-universe management job.
 
         This method discovers the Snakemake executable, constructs a
-        Submit description for HTCondor, submits the job, writes a pointer
-        file into `.snakemake/htcondor` so other commands (eg. `status`)
-        can locate the workflow job directory, and prints submission info.
+        Submit description for HTCondor, submits the job, and prints
+        submission info. The metadata file path is set as a custom
+        ClassAd attribute (`HTCondorSnakeMetadata`) on the management
+        job so other commands (eg. `status`) can locate it via the schedd.
 
         Args:
             snakefile (pathlib.Path or str): Path to the Snakefile to run.
@@ -264,14 +270,13 @@ class Submit(Verb):
             
             # Specify getenv so the job uses the submitter's environment
             "getenv": "true",
-
-            # Inject mgmt_id at submit time so executor can read it immediately
-            # $(ClusterId) is expanded by HTCondor before the job starts, avoiding
-            # the race condition of schedd.edit() after submission
-            "environment": "SNAKEMAKE_MGMT_ID=$(ClusterId)",
             
             # Management Job Name
             "JobBatchName": f"snakemake-mgmt-$(ClusterId)",
+
+            # Pointer to the metadata file, set on the ClassAd so `htcondor snake
+            # status <mgmt_id>` can read it straight from the schedd. 
+            "MY.HTCondorSnakeMetadata": f'"{jobdir}/snakemake-metadata-$(ClusterId).json"',
         })
         
         # Submit to HTCondor
@@ -289,6 +294,7 @@ class Halt(Verb):
     options = {
         "mgmt_id": {
             "args": ("mgmt_id",),
+            "type": int,
             "help": "Positional argument for a management JobID that oversees the entire workflow. Must be specified."
         },
     }
@@ -314,7 +320,7 @@ class Halt(Verb):
         self.logger = logger
 
         if mgmt_id is None:
-            print("Error: management job ID is required")
+            print("Error: management job ID is required.")
             sys.exit(1)
         
         try:
@@ -328,7 +334,7 @@ class Halt(Verb):
         # To minimized TOCTOU, we will, at the same time, ask for the JobStatus together with SnakeMgmtPID
         # and only send SIGTERM to this PID when the job is still running.
         # TOCTOU still exists but less common in modern linux OS unless users are running
-        # in the containers or aps that are very busy.
+        # in the containers or APs that are very busy.
 
         try:
             schedd = htcondor.Schedd()
