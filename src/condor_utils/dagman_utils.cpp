@@ -18,6 +18,8 @@
  ***************************************************************/
 
 #include "condor_common.h"
+#include "basename.h"
+#include "condor_string.h" // for getline_trim
 #include "condor_arglist.h"
 #include "condor_attributes.h"
 #include "condor_getcwd.h"
@@ -247,6 +249,10 @@ DagmanUtils::writeSubmitFile(DagmanOptions &options, str_list &dagFileAttrLines)
 
 	if (options[shallow::b::DoRecovery]) {
 		args.AppendArg( "-DoRecov" );
+	}
+
+	if (options[shallow::b::SetupOnly]) {
+		args.AppendArg("-SetupOnly");
 	}
 
 	args.AppendArg("-CsdVersion");
