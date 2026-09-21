@@ -32,7 +32,7 @@ Synopsis
 | **htcondor** **dag** *resources* [**-history**] dagman-job-id
 
 | **htcondor** **snake** *submit* [**-\-jobdir** *directory*] [**snakefile**] [**-\- snakemake_args ...**]
-| **htcondor** **snake** *remove* [**mgmt_id**]
+| **htcondor** **snake** *remove* **mgmt_id** [**-f/-\-fast** | **-p/-\-peaceful**]
 
 | **htcondor** **eventlog** *read* [**-csv** | **-json**] [**-\-groupby** *attribute*] eventlog [eventlog2 [eventlog3 ...]]
 | **htcondor** **eventlog** *follow* [**-csv** | **-json**] [**-\-groupby** *attribute*] eventlog
@@ -459,12 +459,23 @@ Snake Verbs
             
             $ htcondor snake submit -- --jobs 6 --cores 4
         
-    **htcondor snake remove** [**mgmt_id**]
+    **htcondor snake remove** **mgmt_id** [**-f/-\-fast** | **-p/-\-peaceful**]
+
+        Remove jobs associated with the management job including the manager itself.
         
-        Remove all jobs -- running or not yet submitted -- associated with the manager job including the manager itself.
+        Exactly one of **-\-fast** or **-\-peaceful** flag or none at all (equivalent to the **-\-fast** behavior) 
+        must be specified to indicate the type of removal mode to execute.
 
         **mgmt_id**
-            Tell which management job should be removed. Must be specified. 
+            Tell which management job should be removed. Must be specified.
+
+        **-f, -\-fast**
+            Immediately terminate the workflow: all jobs associated with the management job, including
+            currently-running ones, are removed right away.
+
+        **-p, -\-peaceful**
+            Gracefully terminate the workflow: currently-running jobs are allowed to finish, and no new jobs
+            are submitted. The management job itself keeps running until Snakemake shuts down on its own.
 
 .. sidebar:: HTCondor CLI System Nouns
 
