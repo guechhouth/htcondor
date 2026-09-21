@@ -1,16 +1,16 @@
 import argparse
 import htcondor2 as htcondor
 import shutil
-import subprocess
 import importlib.util
 import sys
-import time
-from datetime import datetime, timedelta
+import signal
+import os
 from pathlib import Path
 
 from htcondor_cli.noun import Noun
 from htcondor_cli.verb import Verb
-import traceback
+from htcondor_cli import MutualExclusionArgs
+import getpass
 
 
 """
@@ -18,6 +18,8 @@ HTCondor CLI for running Snakemake workflow
 """
 from htcondor_cli.noun import Noun
 from htcondor_cli.verb import Verb
+
+JSM_HTC_SNAKE_SUBMIT = 6 
 
 class Submit(Verb):
     """
@@ -266,18 +268,154 @@ class Submit(Verb):
             
             # Specify getenv so the job uses the submitter's environment
             "getenv": "true",
-            
+
             # Management Job Name
             "JobBatchName": f"snakemake-mgmt-$(ClusterId)",
+
+            # Setting the remove signal to be SIGINT instead of SIGTERM because Snakemake internal 
+            # treat SIGTERM as graceful removal and will not trigger `cancel_jobs` method in the executor.
+            "remove_kill_sig": "SIGINT",
         })
         
         # Submit to HTCondor
         schedd = htcondor.Schedd()
+        # Set s_method to JSM_HTC_SNAKE_SUBMIT
+        submit_description.setSubmitMethod(JSM_HTC_SNAKE_SUBMIT, True)
+
         submit_result = schedd.submit(submit_description)
+        
         
         cluster_id = submit_result.cluster()
         print(f"Snakemake managment job submitted with JobID {cluster_id}.0")
         print(f"Logs can be found in {jobdir}")
+
+class Remove(Verb):
+    """
+    Remove associated jobs given the management job ID
+    
+    There are two modes:
+    - fast mode: hard kill of the Snakemake process (all associated jobs will be removed and clean up process triggered)
+    - peaceful mode: graceful termination of the Snakemake process (allow running jobs to complete)
+    """
+    # Positional argument for the management ID
+    options = {
+        "mgmt_id": {
+            "args": ("mgmt_id",), # positional argument
+            "type": int,
+            "help": "Positional argument for a management JobID that oversees the entire workflow. Must be specified.",
+        },
+        "remove_mode": MutualExclusionArgs({
+            "fast": {
+                "args": ("--fast", "-f"),
+                "action": "store_true",
+                "help": "Immediate termination of the current workflow: stop all jobs associated with the provided the management id.",
+            },
+            "peaceful": {
+                "args": ("--peaceful", "-p"),
+                "action": "store_true",
+                "help": "Graceful termination of the current workflow: allow running jobs to complete, stop submitting new ones.",
+            },
+        }),
+    }
+
+    def __init__(self, logger, mgmt_id=None, **options):
+        """
+        When `htcondor snake remove <mgmt_id> --peaceful is run, allow running jobs to complete and stop submitting new ones.
+
+        When `htcondor snake remove <mgmt_id> --fast` is run, remove all jobs associated with the management job immediately.
+
+        When `--fast` or `--peaceful` is not specified, we'll default to `--fast`.
+        
+        This also involves making sure that the id provided is the management job id and the jobs to be removed are under it.
+
+        Args:
+            logger: Logger object used for logging messages.
+            mgmt_id (str or int): Management job ClusterId for the workflow.
+            **options: for method specifications. Suported flags:
+                - "--fast": hard kill (SIGINT)
+                - "--peaceful": graceful kill (SIGTERM)
+
+        Returns:
+            None
+
+        Raises:
+            RuntimeError: if the schedd cannot be reached or the removal request fails.
+        """
+        self.logger = logger
+        
+        if mgmt_id is None:
+            print("Error: management ID is required")
+            sys.exit(1)
+
+        try:
+            mgmt_id = int(mgmt_id)
+        except ValueError:
+            print("Management Job ID must be an integer.")
+            sys.exit(1)
+
+        try:
+            schedd = htcondor.Schedd()
+            if options.get("fast") or (not options.get("peaceful")):
+                # Verify that the management id given belongs to Snakemake process by checking job submit method
+                
+                # Send the signal to the schedd to remove the management job -> pass to Snakemake process
+                # Instead of SIGTERM that is the default, we use SIGINT set as a classad in submit description
+                # because Snakemake internal does graceful removal with SIGTERM and will not trigger `cancel_jobs()`
+                # Note: running condor_rm for this workflow = sending SIGINT
+                res = schedd.act(
+                    htcondor.JobAction.Remove,
+                    f"(ClusterId == {mgmt_id} && JobSubmitMethod == {JSM_HTC_SNAKE_SUBMIT}) || SnakeManagerJobId == {mgmt_id}",
+                    reason=f"via htcondor snake remove (by user {getpass.getuser()})",
+                )
+                
+                # Check that the job was actually found and removed = 1 here
+                total_success = res.get("TotalSuccess", 0)
+                total_error = res.get("TotalError", 0)
+
+                if total_success > 0:
+                    self.logger.info(f"Removing the management job {mgmt_id}. All associated jobs will be removed shortly after that.")
+                elif total_error > 0:
+                    self.logger.warning(f"Failed to remove job {mgmt_id}: schedd reported {total_error} error(s).")
+                else:
+                    self.logger.info(
+                        f"Job {mgmt_id} was not found as a `htcondor snake submit` "
+                        "management job."
+                    )
+            else:
+                # Query the SnakeMgmtPID 
+                jobs = schedd.query(
+                    constraint=f"ClusterId == {mgmt_id} && JobSubmitMethod == {JSM_HTC_SNAKE_SUBMIT}", 
+                    projection=["JobStatus", "SnakeMgmtPID"])
+
+                if not jobs:
+                    self.logger.error(f"No management job found with JobID {mgmt_id}.")
+                    sys.exit(1)
+
+                target_pid = None
+                for job in jobs:
+                    status = job.get("JobStatus")
+                    # making sure it is actively running
+                    if status == 2:
+                        target_pid = job.get("SnakeMgmtPID")
+                        break
+
+                if target_pid is None:
+                    self.logger.warning(f"Management job {mgmt_id} is not currently running.")
+                    sys.exit(1)
+
+                # 2. Sending SIGTERM to management job.
+                # Snakemake catches SIGTERM and shuts down gracefully: it lets
+                # already-running jobs finish and stops submitting new ones.
+                try:
+                    os.kill(target_pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    self.logger.warning(f"Management job {mgmt_id} process (PID {target_pid}) is no longer running.")
+                    sys.exit(1)
+
+                self.logger.info(f"Removing the management job {mgmt_id}. Its running jobs will be completed before exiting.")
+        except Exception as e:
+            self.logger.error(f"Could not halt the management job: {e}")
+            sys.exit(1)
 
 
 class Snake(Noun):
@@ -288,6 +426,8 @@ class Snake(Noun):
     class submit(Submit):
         pass
 
+    class remove(Remove):
+        pass
     @classmethod
     def verbs(cls):
-        return [cls.submit] 
+        return [cls.submit, cls.remove] 
