@@ -567,6 +567,11 @@ match_rec::~match_rec()
 		// If we are shuting down, the daemonCore instance will be null
 		// and any use of it will cause a core dump.  At best.
 	if (!daemonCore) {
+			// Still free claim_id, which is normally freed at the end of
+			// this destructor (after the sec-session block that references
+			// it).  Without this, shutdown-time destruction leaks it.
+		claim_id_parser.clear(); // clear because this refs the claim_id we are about to free
+		if (claim_id) { free(claim_id); claim_id = nullptr; }
 		return;
 	}
 
@@ -1142,9 +1147,10 @@ Scheduler::timeout( int /* timerID */ )
 	daemonCore->Reset_Timer(timeoutid,time_to_next_run,1);
 }
 
-void Scheduler::endSubmitTransaction(int num_new_jobs, int num_new_idle_jobs)
+void Scheduler::endSubmitTransaction(int num_new_jobs, int num_new_idle_jobs, int num_new_idle_dag_or_local_jobs)
 {
-	dprintf(D_FULLDEBUG, "endSubmitTransaction new_jobs=%d idle=%d\n", num_new_jobs, num_new_idle_jobs);
+	dprintf(D_FULLDEBUG, "endSubmitTransaction new_jobs=%d idle=%d dag_or_local=%d\n",
+		num_new_jobs, num_new_idle_jobs, num_new_idle_dag_or_local_jobs);
 
 	// when we get new idle jobs and we had no submitter pressure before (i.e no idle jobs)
 	// we want to consider re-running count_jobs and sending a RESCHEDULE to the negotiator
@@ -1153,6 +1159,18 @@ void Scheduler::endSubmitTransaction(int num_new_jobs, int num_new_idle_jobs)
 			dprintf(D_STATUS,
 				"%d new idle jobs submitted, and last update had no job pressure. Triggering a rechedule.\n",
 				num_new_idle_jobs);
+			needReschedule();
+		} else if (num_new_idle_dag_or_local_jobs > 0) {
+			dprintf(D_STATUS,
+				"%d new idle dag or local jobs submitted. Triggering a rechedule.\n",
+				num_new_idle_jobs);
+			// TODO: do less than a full reschdule here
+			needReschedule();
+		} else if ( ! cronTabClusterIds.empty()) {
+			dprintf(D_STATUS,
+				"%d new CRONDOR jobs submitted. Triggering a rechedule.\n",
+				(int)cronTabClusterIds.size());
+			// TODO: do less than a full reschdule here
 			needReschedule();
 		}
 	}
@@ -5436,6 +5454,16 @@ PeriodicExprEval(JobQueueJob *jobad, const JOB_ID_KEY & /*jid*/, void * pvUser)
 	if ( (status == COMPLETED || status == REMOVED) &&
 	     ! scheduler.FindSrecByProcID(jobad->jid) )
 	{
+			// A removed job leaves the queue via the JOB_ABORTED event.  The
+			// deferred abort_job_myself() normally writes it, but this reaper
+			// can win the race and destroy the ad first; if so, write the
+			// event here (idempotently) so it is never lost.  COMPLETED jobs
+			// already got their terminal event from the shadow.
+		if ( status == REMOVED ) {
+			if( !scheduler.WriteAbortToUserLog(jobad) ) {
+				dprintf( D_ALWAYS, "Failed to write abort event to the user log\n" );
+			}
+		}
 		DestroyProc(cluster,proc);
 	}
 
@@ -5880,6 +5908,22 @@ Scheduler::WriteSubmitToUserLog(const JobQueueJob* job, bool do_fsync, const cha
 bool
 Scheduler::WriteAbortToUserLog(const JobQueueJob* job)
 {
+		// The JOB_ABORTED event must be written exactly once, but more than
+		// one cleanup path can race to remove the same job: the deferred
+		// abort_job_myself() (act_on_job_myself_queue) and the periodic policy
+		// reaper (PeriodicExprEval) can both try to reap an idle removed job.
+		// If the reaper destroys the ad before the deferred handler runs, the
+		// abort event would otherwise be lost, hanging any user-log consumer
+		// (e.g. DAGMan) that waits for a terminal event.  Use a nondurable
+		// marker so whichever path arrives first logs the event and the rest
+		// skip it.
+	int abort_logged = 0;
+	if( GetAttributeInt(job->jid.cluster, job->jid.proc,
+	                    ATTR_JOB_ABORT_EVENT_LOGGED, &abort_logged) >= 0 &&
+	    abort_logged ) {
+		return true;
+	}
+
 	TemporaryPrivSentry sentry;
 	init_user_ids_from_ad(*job->ownerinfo);
 	WriteUserLog* ULog = this->InitializeUserLog(job);
@@ -5903,6 +5947,12 @@ Scheduler::WriteAbortToUserLog(const JobQueueJob* job)
 				 job->jid.cluster, job->jid.proc );
 		return false;
 	}
+
+		// Mark the event as logged so a racing cleanup path won't write a
+		// duplicate.  Nondurable: the marker only needs to outlive the ad,
+		// which is destroyed moments later, so it need not survive a restart.
+	SetAttributeInt(job->jid.cluster, job->jid.proc,
+	                ATTR_JOB_ABORT_EVENT_LOGGED, 1, NONDURABLE);
 	return true;
 }
 
@@ -10234,6 +10284,19 @@ Scheduler::makeReconnectRecords( const PROC_ID & job, const ClassAd* match_ad )
 	}
 
 	JobQueueJob* job_ad = GetJobAd(cluster, proc);
+	// Already checked above, but let's be sure
+	if (job_ad == nullptr) {
+		dprintf(D_ALWAYS, "WARNING: job %d.%d no longer in job queue, cannot reconnect\n", cluster, proc);
+		mark_job_stopped( job );
+		scheduler.stats.JobsRestartReconnectsAttempting -= 1;
+		scheduler.stats.JobsRestartReconnectsFailed += 1;
+		if (startd_addr) free(startd_addr);
+		if (startd_name) free(startd_name);
+		if (startd_principal) free(startd_principal);
+		if (pool) free(pool);
+		return;
+	}
+
 	TemporaryPrivSentry sentry;
 	init_user_ids_from_ad(*job_ad->ownerinfo);
 	WriteUserLog* ULog = this->InitializeUserLog(job_ad);
@@ -11174,17 +11237,11 @@ Scheduler::mark_catalog_dead( const std::string & catalogName ) {
 		return false;
 	}
 
-	// unregister_shadow_catalogs() needs the PID of the shadow currently responsible
-	// for the catalog so that it won't erase entries that have been made in the map
-	// since then.
-	auto shadow = getShadowForCatalog( catalogName );
-	int shadow_pid = (* shadow)->pid;
-
 	// Why do we use manifest constants for attributes but not config knobs?
 	int keep_common_idle = param_integer( "KEEP_DATA_CLAIM_IDLE", 300 );
 	catalogToTimerMap[catalogName] = daemonCore->Register_Timer(
 		keep_common_idle, TIMER_NEVER,
-		[this, catalogName, shadow_pid](int /* timerID */) -> void {
+		[this, catalogName](int /* timerID */) -> void {
 			auto shadow = getShadowForCatalog( catalogName );
 			if(! shadow) {
 				dprintf( D_ALWAYS, "Found no shadow for catalog scheduled for clean-up: '%s'\n", catalogName.c_str() );
@@ -11889,17 +11946,17 @@ Scheduler::spawnJobHandlerRaw( shadow_rec* srec, const char* path,
 			// something in $$() that doesn't exist in the machine
 			// ad and/or if the machine ad is already gone for some
 			// reason.  so, verify the job is still here...
-		if( ! GetJobAd(job_id) ) {
+		if( ! GetJobAd(real_job_id) ) {
 			EXCEPT( "Impossible: GetJobAd() returned NULL for %d.%d "
 					"but that job is already known to exist",
-					job_id.cluster, job_id.proc );
+					real_job_id.cluster, real_job_id.proc );
 		}
 
 			// the job is still there, it just failed b/c of $$()
 			// woes... abort.
 		dprintf( D_ALWAYS, "ERROR: Failed to get classad for job "
 				 "%d.%d, can't spawn %s, aborting\n",
-				 job_id.cluster, job_id.proc, name );
+				 real_job_id.cluster, real_job_id.proc, name );
 			// our caller will deal with cleaning up the srec
 			// as appropriate...
 		return false;
@@ -18451,6 +18508,7 @@ Scheduler::get_job_connect_info_handler_implementation(int, Stream* s) {
 	std::string job_claimid_buf;
 	char const *job_claimid = NULL;
 	char const *match_sec_session_id = NULL;
+	std::string match_sec_session_buf; // backs match_sec_session_id; must outlive its use below
 	int universe = -1;
 	std::string startd_name;
 	std::string starter_addr;
@@ -18635,8 +18693,7 @@ Scheduler::get_job_connect_info_handler_implementation(int, Stream* s) {
 		}
 		job_claimid = mrec->claimId();
 		if (mrec->use_sec_session) {
-			std::string sessbuf;
-			match_sec_session_id = mrec->secSessionId(sessbuf);
+			match_sec_session_id = mrec->secSessionId(match_sec_session_buf);
 		}
 	}
 
@@ -21898,7 +21955,18 @@ Scheduler::post_transform_adjustments(
 		// This is pure magic and should be explicitly coordinated with (the
 		// name generated by) computeCommonInputFiles().
 		std::string default_name;
-		formatstr( default_name, "clusterID_%d", jid.cluster );
+
+		auto r = determineCIFScopeAndType(* ad);
+		if(! r) {
+			if( errorStack ) {
+				errorStack->push( "CXFER", 4, "Failed to compute common input files catalog ID,"
+					" which is required for common file transfer." );
+			}
+			return -1;
+		}
+		auto [scope, type] = * r;
+		formatstr( default_name, "%s_%s", type.c_str(), scope.c_str() );
+
 		requested_catalogs.push_back( default_name );
 	}
 
