@@ -32,6 +32,7 @@ Synopsis
 | **htcondor** **dag** *resources* [**-history**] dagman-job-id
 
 | **htcondor** **snake** *submit* [**-\-jobdir** *directory*] [**snakefile**] [**-\- snakemake_args ...**]
+| **htcondor** **snake** *status* identifier
 
 | **htcondor** **eventlog** *read* [**-csv** | **-json**] [**-\-groupby** *attribute*] eventlog [eventlog2 [eventlog3 ...]]
 | **htcondor** **eventlog** *follow* [**-csv** | **-json**] [**-\-groupby** *attribute*] eventlog
@@ -427,7 +428,7 @@ Snake Verbs
 -----------
 
 .. warning::
-     Snakemake is not packaged with HTCondor and must be installed seperately.
+     Snakemake is not packaged with HTCondor and must be installed separately.
      See the `Snakemake documentation <https://snakemake.readthedocs.io/>`_ for more information about Snakemake,
      the `snakemake-executor-plugin-htcondor <https://github.com/htcondor/snakemake-executor-plugin-htcondor/blob/main/examples/README.md>`_
      for integrating a Snakemake workflow with HTCondor, and the plugin's `PyPI page <https://pypi.org/project/snakemake-executor-plugin-htcondor/>`_ for installation instructions.
@@ -444,19 +445,46 @@ Snake Verbs
         current directory is used. **snakefile** can be specified before or after **-\-jobdir**.
      
      **-\-jobdir <directory>** 
-        Create a directory in the current working directory with the specified name.
-        If omitted, a directory named **logs** will be created by default in the current directory to store the management job logs.
+        Directory for the logs of the management job and of each rule's HTCondor job, and for the workflow metadata file. 
+        A relative path is relative to the current directory. If omitted, a directory named **logs**
+        in the current directory is used. The directory is created if it does not exist.
      
      Anything after a **-\-** separator is passed through to Snakemake unmodified, so additional Snakemake
      options can be supplied. 
+
+     The management job writes a metadata file, ``snakemake-metadata-<ClusterId>.json``, to
+     the job directory. 
+     **htcondor snake status** reads it to report progress. 
+     To write it somewhere else, pass ``--htcondor-metadata <file>`` after the **-\-** separator.
      
-     **For examples:**
+     **For example:**
 
      .. code-block:: console
 
          $ htcondor snake submit /path/to/Snakefile --jobdir mylogs -- --profile htcondor_profile
          
          $ htcondor snake submit -- --jobs 6 --cores 4
+
+**htcondor snake status** **identifier**
+
+     Displays the progress of a Snakemake workflow: how many of its HTCondor jobs are idle, 
+     running, completed, or held, and what percentage of the workflow is completed.
+
+     **identifier**
+        Either the ClusterId of the management job created by **htcondor snake submit** or the
+        path to the workflow's metadata file. Use the path once the management job has left the
+        queue, or for a workflow run directly with ``snakemake --executor htcondor`` using the
+        ``--htcondor-metadata`` option.
+        A directory is not accepted.
+    
+     **For example:**
+
+     .. code-block:: console
+        
+         $ htcondor snake status 123
+
+         $ htcondor snake status logs/snakemake-metadata.json
+
 
 .. sidebar:: HTCondor CLI System Nouns
 
