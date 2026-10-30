@@ -7,10 +7,7 @@ import time
 import json
 from datetime import timedelta
 from pathlib import Path
-from htcondor_cli.noun import Noun
-from htcondor_cli.verb import Verb
 import traceback
-import argparse
 
 from htcondor_cli.noun import Noun
 from htcondor_cli.verb import Verb
@@ -65,7 +62,6 @@ class Submit(Verb):
                 "Install it with: pip install snakemake-executor-plugin-htcondor"
             )
             
-
         if snakefile is None:
             # Extract --jobdir from snakemake_args if present
             snakemake_args = self._extract_jobdir_from_remainder(snakemake_args, options)
@@ -211,9 +207,12 @@ class Submit(Verb):
 
         This method discovers the Snakemake executable, constructs a
         Submit description for HTCondor, submits the job, and prints
-        submission info. The metadata file path is set as a custom
-        ClassAd attribute (`HTCondorSnakeMetadata`) on the management
-        job so other commands (eg. `status`) can locate it via the schedd.
+        submission info. 
+        
+        Metadata file is enabled by default. The executor then
+        sets the metadata file path as a custom ClassAd attribute
+        (`HTCondorSnakeMetadata`) on the management job so other commands
+        (eg. `status`) can locate it via the schedd.
 
         Args:
             snakefile (pathlib.Path or str): Path to the Snakefile to run.
@@ -245,6 +244,15 @@ class Submit(Verb):
             f"--htcondor-jobdir {jobdir}",
         ]
 
+        # Enable metadata by default (for `status`) unless the user chose
+        # their own location. "default" matches METADATA_DEFAULT in the executor.
+        user_set_metadata = any(
+            arg == "--htcondor-metadata" or arg.startswith("--htcondor-metadata=")
+            for arg in (snakemake_args or [])
+        )
+        if not user_set_metadata:
+            args_list.append("--htcondor-metadata default")
+
         # Append any additional snakemake args passed after the -- separator
         if snakemake_args:
             args_list.extend(snakemake_args)
@@ -270,10 +278,6 @@ class Submit(Verb):
             "getenv": "true",
 
             "JobBatchName": "snakemake-mgmt-$(ClusterId)",
-
-            # Pointer to the metadata file, set on the ClassAd so `htcondor snake
-            # status <mgmt_id>` can read it straight from the schedd. 
-            "MY.HTCondorSnakeMetadata": f'"{jobdir}/snakemake-metadata-$(ClusterId).json"',
         })
 
         # Submit to HTCondor
@@ -287,89 +291,99 @@ class Submit(Verb):
 
 class Status(Verb):
     """
-    Shows the current status of a workflow when given the management's ID.
-    The metadata file path is read from the `HTCondorSnakeMetadata` ClassAd
-    attribute (set at submit time), then the cached metadata file itself is
-    read for the actual status details.
+    Shows the current status of a workflow, given either the management job's ClusterId 
+    (the metadata path is read from its HTCondorSnakeMetadata ClassAd attribute) or 
+    the full path to the metadata file.
     """
     # Command-line argument configurations
     options = {
-        "mgmt_id": {
-            "args": ("mgmt_id",), # positional argument
-            "type": int,
-            "help": "Positional argument for a management JobID that oversees the entire workflow. Must be specified.",
+        "identifier": {
+            "args": ("identifier",), # positional argument
+            "type": str,
+            "help": "Management job ClusterId, or full path to the workflow's metadata file. "
+                  "Directory path is not accepted",
         },
     }
 
-    def __init__(self, logger, mgmt_id=None, **options):
+    def __init__(self, logger, identifier=None, **options):
         """
-        Initialize a status viewer and display workflow status.
+        Initialize a status viewer and display a user-friendly workflow status.
 
-        This constructor queries the schedd once for the management job's
-        ClassAd (which includes the `HTCondorSnakeMetadata` pointer set at
-        submit time), reads the cached metadata file it points to, and
-        prints a user-friendly status summary.
+        If the identifier is the management ClusterId:
+            This constructor queries the schedd once for the management job's
+            ClassAd (which includes the `HTCondorSnakeMetadata` pointer set by
+            the executor) and reads the cached metadata file it points to.
+        if the identifier is the path to the metadata file:
+            The path will be used to parse the cached metadata file directly.
 
         Args:
             logger: Logger instance for logging messages.
-            mgmt_id (str or int): Management job ClusterId for the workflow.
+            identifier (str): Management job ClusterId, or full path to the metadata file.
             **options: Reserved for future options.
 
         Returns:
             None
 
         Raises:
-            FileNotFoundError: If the metadata file cannot be found.
+            SystemExit: If the metadata file cannot be located or read.
         """
         self.logger = logger
 
-        if mgmt_id is None:
-            print("Error: management ID is required")
+        if identifier is None:
+            print("Error: an identifier (management job ID or full path to the metadata file) is required")
             sys.exit(1)
 
-        try:
-            # Query schedd once for management job info (elapsed time, status,
-            # and the HTCondorSnakeMetadata pointer set at submit time)
-            mgmt_job_ad = self._get_mgmt_job_info(mgmt_id)
+        # If the value provided in the flag is the mgmt_id
+        metadata_path_str = None
+        mgmt_job_ad = None
+        if identifier.isdigit():
+            try:
+                # Query schedd once for management job info (elapsed time, status,
+                # and the HTCondorSnakeMetadata pointer set by the executor)
+                mgmt_job_ad = self._get_mgmt_job_info(identifier)
 
-            metadata_path_str = mgmt_job_ad.get("HTCondorSnakeMetadata") if mgmt_job_ad else None
-            if not metadata_path_str:
-                self.logger.error(
-                    f"No metadata path found for management job with id {mgmt_id}.\nPossible causes: the ID is "
-                    f"wrong, the job has already completed and left the queue, or it wasn't "
-                    f"submitted via 'htcondor snake submit'."
-                )
+                if mgmt_job_ad is None:
+                    self.logger.error(
+                        f"No job with ClusterId {identifier} found in the queue. If the workflow "
+                        f"has finished, pass the path to its metadata file instead."
+                    )
+                    sys.exit(1)
+
+                metadata_path_str = mgmt_job_ad.get("HTCondorSnakeMetadata") if mgmt_job_ad else None
+                if not metadata_path_str:
+                    self.logger.error(
+                        f"Job {identifier} has no metadata path yet. Snakemake may still be starting; "
+                        f"if it persists, check the job's .err file in its jobdir."
+                    )
+                    sys.exit(1)
+            except Exception as e:
+                self.logger.error(f"Could not get status for job {identifier} with an exception: {str(e)}")
                 sys.exit(1)
+    
+        else:
+            metadata_path_str = identifier
+
+        try:
             metadata_path = Path(metadata_path_str)
 
+            if metadata_path.is_dir():
+                self.logger.error(
+                    f"{metadata_path} is a directory. Pass the path to the metadata file instead."
+                )
+                sys.exit(1)
+                
             if not metadata_path.exists():
                 self.logger.error(f"Metadata not found at {metadata_path}")
                 sys.exit(1)
 
             with open(metadata_path) as f:
                 metadata = json.load(f)
-
-            self._show_status(mgmt_id, metadata, mgmt_job_ad)
-
+            self._display_workflow_status(identifier, metadata, mgmt_job_ad)
+        
         except Exception as e:
-            self.logger.error(f"Could not get status for job {mgmt_id} with an exception: {str(e)}")
+            self.logger.error(f"Could not read metadata at {metadata_path_str}: {e}")
             self.logger.debug(traceback.format_exc())
-    
-    def _show_status(self, mgmt_id, metadata, mgmt_job_ad):
-        """
-        Read cached metadata and produce a human-readable status display.
-
-        Args:
-            mgmt_id (str or int): Management ClusterId used to label the
-                workflow in output.
-            metadata (dict): Parsed JSON metadata containing job status and
-                DAG information produced by Snakemake.
-
-        Returns:
-            None
-        """
-        # Display using metadata for job statuses (efficient, no schedd queries)
-        self._display_workflow_status(mgmt_id, metadata, mgmt_job_ad)
+            sys.exit(1)
     
     def _get_mgmt_job_info(self, mgmt_id):
         """
@@ -381,8 +395,8 @@ class Status(Verb):
         Returns:
             dict or None: A job ad dict with keys such as ``JobStatus``,
             ``EnteredCurrentStatus``, ``QDate``, ``JobBatchName``, and
-            ``HTCondorSnakeMetadata`` (the metadata file pointer set at
-            submit time) if the job is found; otherwise ``None``.
+            ``HTCondorSnakeMetadata`` (the metadata file pointer set by
+            the executor) if the job is found; otherwise ``None``.
         """
         try:
             schedd = htcondor.Schedd()
@@ -393,7 +407,7 @@ class Status(Verb):
             self.logger.warning(f"Could not query schedd for management job info: {e}")
             return None
         
-    def _display_workflow_status(self, mgmt_id, metadata, mgmt_job_ad=None):
+    def _display_workflow_status(self, identifier, metadata, mgmt_job_ad=None):
         """
         Render and print a detailed workflow status summary.
 
@@ -402,7 +416,7 @@ class Status(Verb):
         indicators.
 
         Args:
-            mgmt_id (str or int): Management ClusterId used to label output.
+            identifier (str): Management ClusterId or metadata file path, used to label output.
             metadata (dict): Parsed metadata containing job records and DAG info.
             mgmt_job_ad (dict or None): Optional management job ad from the
                 schedd; when provided, additional runtime information is shown.
@@ -410,17 +424,18 @@ class Status(Verb):
         Returns:
             None
         """
-        # Management job information (optional - only if schedd query succeeded)
+        # Management job information
         if mgmt_job_ad:
             status_labels = {1: "idle", 2: "running", 3: "removed", 4: "completed", 5: "held"}
             htcondor_status = mgmt_job_ad.get("JobStatus", 0)
             mgmt_status = status_labels.get(htcondor_status, "unknown")
-            batch_name = mgmt_job_ad.get("JobBatchName", f"snakemake-mgmt-{mgmt_id}")
+            batch_name = mgmt_job_ad.get("JobBatchName", f"snakemake-mgmt-{identifier}")
             start_time = mgmt_job_ad.get("EnteredCurrentStatus") or mgmt_job_ad.get("QDate", time.time())
             duration = str(timedelta(seconds=int(time.time() - start_time)))
-            print(f"Management Job {mgmt_id} [{batch_name}] has been {mgmt_status} for {duration}")
+            print(f"Management Job {identifier} [{batch_name}] has been {mgmt_status} for {duration}")
         else:
-            print(f"Management Job {mgmt_id}")
+            # This is not a management job
+            print(f"Workflow metadata at {identifier}")
         
         # Count node records from metadata
         ## already cached, no schedd queries needed
@@ -430,7 +445,7 @@ class Status(Verb):
         }
         executable_nodes = metadata.get("executable_nodes", 0)
         total_submitted = len(cluster_ids)
-        total_nodes = len(jobs)
+        submitted_nodes = len(jobs)
 
         # Get available status
         total_idle = total_running = total_completed = total_held = total_removed = 0
@@ -440,18 +455,18 @@ class Status(Verb):
             elif j.get("status", "").lower() == "running":
                 total_running += 1
             elif j.get("status", "").lower() == "completed":
-                total_completed += 1
+                total_completed += 1 # we can use the exit_code and exit_signal here to differentiate what is actually completed
             elif j.get("status", "").lower() == "held":
                 total_held += 1
-            elif j.get("status", "").lower() == "removed": # not sure if we need this to display
+            elif j.get("status", "").lower() == "removed": 
                 total_removed += 1
         
         # Submitted job summary
         if total_submitted > 0:
-            if total_nodes != total_submitted:
+            if submitted_nodes != total_submitted: # grouped jobs
                 print(
                     f"Workflow has submitted {total_submitted} HTCondor job(s), "
-                    f"representing {total_nodes} node(s), of which:"
+                    f"representing {submitted_nodes} node(s), of which:"
                 )
             else:
                 print(f"Workflow has submitted {total_submitted} job(s), of which:")
@@ -476,7 +491,7 @@ class Status(Verb):
         )
 
         # DAG summary
-        waiting_on_dag = max(executable_nodes - total_nodes, 0)
+        waiting_on_dag = max(executable_nodes - submitted_nodes, 0)
         if executable_nodes > 0:
             # Instead of total nodes like DAGMan, we filter out nodes that are not submitted so we change the working here a little bit
             print(f"DAG contains {executable_nodes} total executable node(s), of which:") 
@@ -504,7 +519,7 @@ class Status(Verb):
             print(f"{colorize('→', Color.BLUE)} Workflow is running normally.")
         
         # Progress bar
-        progress_total = executable_nodes or total_nodes
+        progress_total = executable_nodes or submitted_nodes
         if progress_total > 0:
             pct_completed = (total_completed / progress_total) * 100
             bar_width = 40
