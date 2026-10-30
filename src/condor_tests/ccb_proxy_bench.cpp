@@ -28,6 +28,7 @@
 #include "ipv6_hostname.h"
 #include "condor_sockaddr.h"
 #include <tuple>
+#include <memory>
 
 #ifdef WIN32
 
@@ -55,8 +56,12 @@ static const int BLAST_BUF = 256 * 1024;
 
 // Run a bidirectional blast on fd for `seconds`: keep the outbound direction
 // full and drain the inbound direction, returning the inbound throughput in
-// bytes/sec (i.e. the rate at which the peer's data arrives).
-static double blast( int fd, int seconds )
+// bytes/sec (i.e. the rate at which the peer's data arrives) and, in
+// received_out, the exact number of inbound bytes.  Both are reported for human
+// diagnosis; liveness is proven separately by prime(), because this blast is a
+// winner-take-all measurement whose losing direction can deliver zero bytes
+// within the window (see prime()).
+static double blast( int fd, int seconds, uint64_t &received_out )
 {
 	int flags = fcntl(fd, F_GETFL, 0);
 	if( flags >= 0 ) { std::ignore = fcntl(fd, F_SETFL, flags | O_NONBLOCK); }
@@ -88,7 +93,58 @@ static double blast( int fd, int seconds )
 		}
 	}
 	double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+	received_out = received;
 	return secs > 0 ? (double)received / secs : 0.0;
+}
+
+// Prove, before the throughput blast, that at least one byte traverses the relay
+// in EACH direction -- the liveness check that guards against a relay which
+// establishes but pumps only one way.  This CANNOT be read off the blast: the
+// blast is a saturating, winner-take-all bidirectional measurement (worst under
+// concurrent suite load, and systematically lopsided under shared port, where
+// the reply path's buffering gives one direction a head start), so the losing
+// direction can deliver zero bytes *within the fixed measurement window* even
+// though the relay is carrying its data -- the bytes are simply still in flight,
+// backed up in kernel/relay buffers, when the peer closes at end-of-window.
+//
+// prime() runs the instant the splice is up, while both directions are still
+// empty, so the first byte each way flows immediately -- before any winner-take-
+// all can develop.  It is non-blocking and resends continuously, so it is robust
+// to a lost first-byte readiness wakeup (a lone un-retried byte can race the
+// broker's relay-socket registration and strand the handshake).  Returns true
+// once we have received a byte from the peer, which proves the peer->us
+// direction; the peer's own prime() call proves us->peer.  A truly one-way relay
+// makes one side's prime() time out and the bench exits non-zero.
+static bool prime( int fd, int deadline_seconds )
+{
+	int flags = fcntl(fd, F_GETFL, 0);
+	if( flags >= 0 ) { std::ignore = fcntl(fd, F_SETFL, flags | O_NONBLOCK); }
+
+	char out = 'p';
+	char in[64];
+	auto start = std::chrono::steady_clock::now();
+	auto deadline = start + std::chrono::seconds(deadline_seconds);
+
+	while( std::chrono::steady_clock::now() < deadline ) {
+		struct pollfd pfd;
+		pfd.fd = fd;
+		pfd.events = POLLIN | POLLOUT;
+		pfd.revents = 0;
+		int rc = poll(&pfd, 1, 100);
+		if( rc < 0 ) { if( errno == EINTR ) { continue; } return false; }
+		if( pfd.revents & (POLLERR|POLLNVAL|POLLHUP) ) { return false; }
+		if( pfd.revents & POLLOUT ) {
+			ssize_t n = send(fd, &out, 1, 0);
+			if( n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR ) { return false; }
+		}
+		if( pfd.revents & POLLIN ) {
+			ssize_t n = recv(fd, in, sizeof(in), 0);
+			if( n > 0 ) { return true; }     // a byte from the peer: peer->us is live
+			if( n == 0 ) { return false; }   // peer closed before priming
+			if( errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR ) { return false; }
+		}
+	}
+	return false;
 }
 
 // targetRole: register with the broker, wait for the forwarded request, reverse-
@@ -100,6 +156,7 @@ static int targetRole( const char *broker, int seconds, FILE *to_parent )
 	Daemon ccb(DT_COLLECTOR, broker, NULL);
 	Sock *reg = ccb.startCommand(CCB_REGISTER, Stream::reli_sock, 20, NULL);
 	if( !reg ) { fprintf(stderr, "target: startCommand(CCB_REGISTER) failed\n"); return 1; }
+	std::unique_ptr<Sock> reg_owner(reg);
 
 	ClassAd ad;
 	ad.Assign(ATTR_COMMAND, CCB_REGISTER);
@@ -148,7 +205,8 @@ static int targetRole( const char *broker, int seconds, FILE *to_parent )
 		fprintf(stderr, "target: failed to send reverse-connect hello\n"); return 1;
 	}
 
-	double rate = blast(rc.get_file_desc(), seconds);   // requester -> target
+	uint64_t rbytes = 0;
+	double rate = blast(rc.get_file_desc(), seconds, rbytes);   // requester -> target
 	fprintf(to_parent, "%.6f\n", rate);
 	fflush(to_parent);
 	return 0;
@@ -169,6 +227,7 @@ static int requesterRole( const char *broker, int seconds, FILE *from_target )
 	Daemon ccb(DT_COLLECTOR, broker, NULL);
 	Sock *req = ccb.startCommand(CCB_REQUEST, Stream::reli_sock, 20, NULL);
 	if( !req ) { fprintf(stderr, "requester: startCommand(CCB_REQUEST) failed\n"); return 1; }
+	std::unique_ptr<Sock> req_owner(req);
 
 	char *connect_id = Condor_Crypt_Base::randomHexKey(20);
 	ClassAd reqad;
@@ -201,7 +260,8 @@ static int requesterRole( const char *broker, int seconds, FILE *from_target )
 		fprintf(stderr, "requester: failed to read proxied hello\n"); return 1;
 	}
 
-	double tgt_to_req = blast(req->get_file_desc(), seconds);
+	uint64_t tgt_to_req_bytes = 0;
+	double tgt_to_req = blast(req->get_file_desc(), seconds, tgt_to_req_bytes);
 
 	// Second line from the target: the requester->target rate it measured.
 	double req_to_tgt = 0.0;
@@ -227,6 +287,7 @@ static int targetRole_deadbeat( const char *broker, FILE *to_parent )
 	Daemon ccb(DT_COLLECTOR, broker, NULL);
 	Sock *reg = ccb.startCommand(CCB_REGISTER, Stream::reli_sock, 20, NULL);
 	if( !reg ) { fprintf(stderr, "target: startCommand(CCB_REGISTER) failed\n"); return 1; }
+	std::unique_ptr<Sock> reg_owner(reg);
 
 	ClassAd ad;
 	ad.Assign(ATTR_COMMAND, CCB_REGISTER);
@@ -270,6 +331,7 @@ static int requesterRole_expectReap( const char *broker, FILE *from_target )
 	Daemon ccb(DT_COLLECTOR, broker, NULL);
 	Sock *req = ccb.startCommand(CCB_REQUEST, Stream::reli_sock, 20, NULL);
 	if( !req ) { fprintf(stderr, "requester: startCommand(CCB_REQUEST) failed\n"); return 1; }
+	std::unique_ptr<Sock> req_owner(req);
 
 	char *connect_id = Condor_Crypt_Base::randomHexKey(20);
 	ClassAd reqad;
@@ -325,7 +387,7 @@ static Sock *sendStreamingRequest( const char *broker, const std::string &ccbid,
 	free(cid);
 	req->encode();
 	if( !putClassAd(req, reqad) || !req->end_of_message() ) {
-		fprintf(stderr, "cap-test: failed to send request\n"); return nullptr;
+		fprintf(stderr, "cap-test: failed to send request\n"); delete req; return nullptr;
 	}
 	return req;
 }
@@ -339,6 +401,7 @@ static int capTest( const char *broker )
 	Daemon ccb(DT_COLLECTOR, broker, NULL);
 	Sock *reg = ccb.startCommand(CCB_REGISTER, Stream::reli_sock, 20, NULL);
 	if( !reg ) { fprintf(stderr, "cap-test: startCommand(CCB_REGISTER) failed\n"); return 1; }
+	std::unique_ptr<Sock> reg_owner(reg);
 	ClassAd ad;
 	ad.Assign(ATTR_COMMAND, CCB_REGISTER);
 	ad.Assign(ATTR_NAME, "ccb_proxy_bench-cap-target");
@@ -358,6 +421,7 @@ static int capTest( const char *broker )
 	std::shared_ptr<Daemon> hold1;
 	Sock *req1 = sendStreamingRequest(broker, ccbid, hold1);
 	if( !req1 ) { return 1; }
+	std::unique_ptr<Sock> req1_owner(req1);
 
 	// Let the broker register the pending session before we probe the limit.
 	sleep(2);
@@ -366,6 +430,7 @@ static int capTest( const char *broker )
 	std::shared_ptr<Daemon> hold2;
 	Sock *req2 = sendStreamingRequest(broker, ccbid, hold2);
 	if( !req2 ) { return 1; }
+	std::unique_ptr<Sock> req2_owner(req2);
 	req2->timeout(30);
 	ClassAd reply;
 	req2->decode();
@@ -401,7 +466,9 @@ static int targetRole_listener( int seconds, FILE *to_parent )
 	sin.sin_addr.s_addr = htonl(INADDR_ANY);
 	sin.sin_port = 0;   // ephemeral
 	if( bind(lfd, (struct sockaddr *)&sin, sizeof(sin)) != 0 ) {
-		fprintf(stderr, "listener: bind() failed\n"); return 1;
+		close(lfd);
+		fprintf(stderr, "listener: bind() failed\n");
+		return 1;
 	}
 	socklen_t slen = sizeof(sin);
 	if( getsockname(lfd, (struct sockaddr *)&sin, &slen) != 0 ) {
@@ -426,8 +493,20 @@ static int targetRole_listener( int seconds, FILE *to_parent )
 	int nodelay = 1;
 	setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
-	double rate = blast(cfd, seconds);   // requester -> target
-	fprintf(to_parent, "%.6f\n", rate);
+		// Prove both relay directions are live before the (winner-take-all) blast.
+	if( !prime(cfd, 20) ) {
+		fprintf(stderr, "listener: relay liveness priming failed (req->tgt never arrived)\n");
+		close(cfd); return 1;
+	}
+
+	uint64_t rbytes = 0;
+	double rate = blast(cfd, seconds, rbytes);   // requester -> target
+		// Report both the rate and the exact received-byte count.  These are printed
+		// for humans/log diagnosis only -- liveness is enforced by prime() above, not
+		// by these numbers: the raw bidirectional blast is winner-take-all, so the
+		// losing direction can deliver zero bytes within the window even though the
+		// relay carries it.
+	fprintf(to_parent, "%.6f %llu\n", rate, (unsigned long long)rbytes);
 	fflush(to_parent);
 	close(cfd);
 	return 0;
@@ -453,6 +532,7 @@ static int requesterRole_outbound( const char *broker, int seconds, FILE *from_t
 	Daemon ccb(DT_COLLECTOR, broker, NULL);
 	Sock *req = ccb.startCommand(CCB_PROXY_CONNECT, Stream::reli_sock, 20, NULL);
 	if( !req ) { fprintf(stderr, "requester: startCommand(CCB_PROXY_CONNECT) failed\n"); return 1; }
+	std::unique_ptr<Sock> req_owner(req);
 
 	char *connect_id = Condor_Crypt_Base::randomHexKey(20);
 	ClassAd reqad;
@@ -480,16 +560,32 @@ static int requesterRole_outbound( const char *broker, int seconds, FILE *from_t
 
 	// Unlike streaming, there is no reverse-connect hello in outbound mode: after
 	// {Result:true} the socket is a raw pipe to the target.
-	double tgt_to_req = blast(req->get_file_desc(), seconds);
+		// Prove both relay directions are live before the (winner-take-all) blast.
+	if( !prime(req->get_file_desc(), 20) ) {
+		fprintf(stderr, "requester: relay liveness priming failed (tgt->req never arrived)\n");
+		return 1;
+	}
+	uint64_t tgt_to_req_bytes = 0;
+	double tgt_to_req = blast(req->get_file_desc(), seconds, tgt_to_req_bytes);
 
 	double req_to_tgt = 0.0;
-	if( fgets(line, sizeof(line), from_target) ) { req_to_tgt = atof(line); }
+	uint64_t req_to_tgt_bytes = 0;
+	if( fgets(line, sizeof(line), from_target) ) {
+		unsigned long long b = 0;
+		sscanf(line, "%lf %llu", &req_to_tgt, &b);
+		req_to_tgt_bytes = (uint64_t)b;
+	}
 
 	auto gbits = [](double bps){ return bps * 8.0 / 1e9; };
 	auto mib   = [](double bps){ return bps / (1024.0*1024.0); };
+		// The rates and trailing "[N bytes]" are informational (they make the
+		// winner-take-all lopsidedness visible in the logs).  The test does NOT assert
+		// on them; bidirectional liveness was proven by prime() before the blast.
 	printf("CCB outbound-proxy relay throughput over %ds:\n", seconds);
-	printf("  requester -> target : %8.1f MiB/s  (%.2f Gbps)\n", mib(req_to_tgt), gbits(req_to_tgt));
-	printf("  target -> requester : %8.1f MiB/s  (%.2f Gbps)\n", mib(tgt_to_req), gbits(tgt_to_req));
+	printf("  requester -> target : %8.1f MiB/s  (%.2f Gbps)  [%llu bytes]\n",
+		   mib(req_to_tgt), gbits(req_to_tgt), (unsigned long long)req_to_tgt_bytes);
+	printf("  target -> requester : %8.1f MiB/s  (%.2f Gbps)  [%llu bytes]\n",
+		   mib(tgt_to_req), gbits(tgt_to_req), (unsigned long long)tgt_to_req_bytes);
 	printf("  aggregate           : %8.1f MiB/s  (%.2f Gbps)\n",
 		   mib(req_to_tgt+tgt_to_req), gbits(req_to_tgt+tgt_to_req));
 	return 0;

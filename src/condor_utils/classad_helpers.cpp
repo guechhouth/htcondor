@@ -268,7 +268,6 @@ ClassAd *CreateJobAd( const char *owner, int universe, const char *cmd )
 	job_ad->Assign( ATTR_JOB_REMOTE_SYS_CPU, 0.0 );
 
 		// Are these ones really necessary?
-	job_ad->Assign( ATTR_JOB_EXIT_STATUS, 0 );
 	job_ad->Assign( ATTR_ON_EXIT_BY_SIGNAL, false );
 
 	job_ad->Assign( ATTR_NUM_CKPTS, 0 );
@@ -360,6 +359,19 @@ ClassAd *CreateJobAd( const char *owner, int universe, const char *cmd )
 }
 
 // tokenize the input string, and insert tokens into the attrs set
+bool isBundleSubmitter(const std::string & submitter_name)
+{
+	// Compare the name up to the '@' domain separator exactly against the
+	// reserved bundle submitter name.  An exact (not prefix) match avoids
+	// misclassifying an unrelated submitter such as "condor_bundlers".
+	size_t at = submitter_name.find('@');
+	std::string_view bare(submitter_name);
+	if (at != std::string::npos) {
+		bare = bare.substr(0, at);
+	}
+	return bare == BUNDLE_SUBMITTER_NAME;
+}
+
 bool add_attrs_from_string_tokens(classad::References & attrs, const char * str, const char * delims=NULL)
 {
 	if (str && str[0]) {

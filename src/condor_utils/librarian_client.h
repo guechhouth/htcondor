@@ -20,15 +20,23 @@
 #pragma once
 
 #include <cstdint>
+#include <ctime>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 // A single indexed record: the byte offset within the file and the file path.
+// file_id is the librarian's Files.FileId. It identifies the file but is NOT a
+// chronological key (a restart after multiple rotations can assign ids out of
+// order). Use rotation_time for archive order instead: the rotation time parsed
+// from a rotated file's name (same as findHistoryFiles()), or 0 for the active
+// file, which is always newest.
 struct LibrarianRecord {
 	int64_t     offset;
 	std::string file_path;
+	int64_t     file_id{0};
+	time_t      rotation_time{0};
 };
 
 // Read-only client for the Librarian SQLite3 index database.
@@ -66,6 +74,14 @@ public:
 	// marked deleted (DateOfDeletion IS NOT NULL).
 	std::vector<LibrarianRecord> GetRecords(const std::vector<std::pair<int,int>>& job_ids,
 	                                        FileFilter filter = FileFilter::OnlyExisting) const;
+
+	// Return the file offset and file path for every JobRecord associated with a
+	// cluster ID. Same file-existence filtering as CountByCluster.
+	std::vector<LibrarianRecord> GetRecordsByCluster(int cluster_id, FileFilter filter = FileFilter::OnlyExisting) const;
+
+	// Return the file offset and file path for every JobRecord associated with a
+	// username. Same file-existence filtering as CountByUser.
+	std::vector<LibrarianRecord> GetRecordsByUser(const std::string& username, FileFilter filter = FileFilter::OnlyExisting) const;
 
 private:
 	struct Impl;

@@ -1640,7 +1640,7 @@ int
 handle_fetch_log(int cmd, Stream *s )
 {
 	char *name = NULL;
-	int  total_bytes = 0;
+	filesize_t total_bytes = 0;
 	int result;
 	int type = -1;
 	ReliSock *stream = (ReliSock *) s;
@@ -3700,7 +3700,7 @@ int dc_main( int argc, char** argv )
 			}
 			break;
 
-		case 'h':		// -http <port> : specify port for HTTP and SOAP requests
+		case 'h':		// -http <port> : specify port for HTTP requests
 			if ( ptr[0][2] && ptr[0][2] == 't' ) {
 					// specify an HTTP port
 				ptr++;
@@ -4202,6 +4202,9 @@ int dc_main( int argc, char** argv )
 
 
 		// SETUP COMMAND SOCKET
+	if (get_mySubSystem()->isType(SUBSYSTEM_TYPE_MASTER) && daemon_sock_name == nullptr) {
+		daemon_sock_name = "master";
+	}
 	daemonCore->SetDaemonSockName( daemon_sock_name );
 	daemonCore->InitDCCommandSocket( command_port );
 

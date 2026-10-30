@@ -38,8 +38,8 @@ all attributes.
     This is how much time HTCondor's fair-share mechanism will charge the job.
 
     This attribute may not be used in startd policy expressions and is
-    not computed until complete.  If a job is prempted or evicted and 
-    restarted, this attribute measure the most recently completed activation
+    not computed until complete.  If a job is preempted or evicted and
+    restarted, this attribute measures the most recently completed activation
     attempt, it does not contain the sum of all prior launches.
 
 
@@ -207,6 +207,9 @@ all attributes.
     suspension during time in which the job was not evicted.
     This number is updated when the job exits.
 
+:classad-attribute-def:`CommonInputFiles`
+    Like :ad-attr:`TransferInput`, except for :ref:`common files<common_file_transfer>`.
+
 :classad-attribute-def:`CompletionDate`
     The time when the job completed, or undefined if the job has not
     yet completed. Measured in the number of seconds since the epoch
@@ -235,7 +238,7 @@ all attributes.
 
 :classad-attribute-def:`ContainerImageSource`
     For Container universe jobs, the string that names the container image source
-    Is "local" for non-transfered images or "cedar" for transfered files.  "docker"
+    is "local" for non-transferred images or "cedar" for transferred files.  "docker"
     or "http" might be other common values.
 
 :classad-attribute-def:`ContainerTargetDir`
@@ -253,10 +256,6 @@ all attributes.
 :classad-attribute-def:`CumulativeSuspensionTime`
     A running total of the number of seconds the job has spent in
     suspension for the life of the job.
-
-:classad-attribute-def:`CumulativeTransferTime`
-    The total time, in seconds, that condor has spent transferring the
-    input and output sandboxes for the life of the job.
 
 :classad-attribute-def:`CurrentHosts`
     The number of hosts in the claimed state, due to this job.
@@ -373,6 +372,13 @@ all attributes.
 :classad-attribute-def:`DockerImage`
     For Docker and Container universe jobs, a string that names the docker image to run
     inside the container.
+
+:classad-attribute-def:`DockerImageHash`
+    For Docker universe jobs, and Container universe jobs which run under
+    Docker, a string set by the *condor_starter* naming the content hash
+    (as reported by ``docker inspect``, e.g. ``sha256:0a1b2c...``) of the
+    image the job actually ran.  Because a tag such as ``:latest`` may name
+    different images over time, this records precisely which image was used.
 
 :classad-attribute-def:`EC2AccessKeyId`
     Used for grid type ec2 jobs; a string taken from the definition of
@@ -569,13 +575,6 @@ all attributes.
     attribute takes on the numeric value of the signal. For some grid
     universe jobs, how the job exited is unavailable. In this case,
     :ad-attr:`ExitSignal` will be undefined.
-
-:classad-attribute-def:`ExitStatus`
-    The way that HTCondor previously dealt with a job's exit status.
-    This attribute should no longer be used. It is not always accurate
-    in heterogeneous pools, or if the job exited with a signal. Instead,
-    see the attributes: :ad-attr:`ExitBySignal`, :ad-attr:`ExitCode`, and
-    :ad-attr:`ExitSignal`.
 
 :classad-attribute-def:`InitialWaitDuration`
     The number of seconds from when a job was queued until the first time
@@ -863,11 +862,10 @@ all attributes.
     :tool:`condor_prio`. The default value is 0. The higher the number, the
     greater (better) the priority.
 
-:classad-attribute-def:`JobRunCount`
-    This attribute is retained for backwards compatibility. It may go
-    away in the future. It is equivalent to :ad-attr:`NumShadowStarts` for all
-    universes except **scheduler**. For the **scheduler** universe, this
-    attribute is equivalent to :ad-attr:`NumJobStarts`.
+:classad-attribute-def:`JobReconnectedDate`
+    Time at which the *condor_shadow* and *condor_starter* last reconnected.
+    Set to ``Undefined`` when a new disconnect occurs. Measured in the
+    number of seconds since the epoch (00:00:00 UTC, Jan 1, 1970).
 
 :classad-attribute-def:`JobStartDate`
     Time at which the job first began running. Measured in the number of
@@ -1681,7 +1679,7 @@ all attributes.
 
 :classad-attribute-def:`JobStarterLog`
     When the *condor_starter* is creating a job-specific copy of its
-    dameon log (see :ad-attr:`JobStarterDebug`), this attribute causes
+    daemon log (see :ad-attr:`JobStarterDebug`), this attribute causes
     the log to be transferred to the Access Point with the job's
     output sandbox, and written to the given pathname.
 

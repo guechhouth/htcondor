@@ -81,7 +81,6 @@
 #define ATTR_CATALOG_SCOPE  "CatalogScope"
 #define ATTR_CATALOG_SCOPE_TYPE  "CatalogScopeType"
 #define ATTR_CATALOG_SIZE  "CatalogSize"
-#define ATTR_CGROUP_ENFORCED  "CgroupEnforced"
 #define ATTR_CE_REQUIREMENTS  "CERequirements"
 #define ATTR_CHIRP_DELAYED_ATTRS  "ChirpDelayedAttrs"
 #define ATTR_CLAIM_STARTD  "ClaimStartd"
@@ -91,6 +90,10 @@
 #define ATTR_COMMON_INPUT_CATALOGS "CommonInputCatalogs"
 #define ATTR_COMMON_INPUT_FILES "CommonInputFiles"
 #define ATTR_COMMON_INPUT_FILES_SIZE_MB "CommonInputFilesSizeMB"
+// See condor_utils/common_files_check.h.
+#define ATTR_COMMON_FILES_SCOPE_HASHES "CommonFilesScopeHashes"    // scope's cluster ad
+#define ATTR_STAGED_CATALOG_HASHES "StagedCatalogHashes"           // DIRECT_ATTACH command ad
+#define ATTR_COMMON_FILES_HASH_CHECK "_condor_CommonFileHashCheck" // shadow's job ad
 #define ATTR_COMPRESS_FILES  "CompressFiles"
 #define ATTR_CONTAINER_SERVICE_NAMES "ContainerServiceNames"
 #define ATTR_CONTAINER_DURATION "ContainerDuration"
@@ -211,6 +214,7 @@
 #define ATTR_IS_TRANSFER_SHADOW "IsTransferShadow"
 #define ATTR_DOCKER_CACHED_IMAGE_SIZE "DockerCachedImageSizeMb"
 #define ATTR_DOCKER_IMAGE "DockerImage"
+#define ATTR_DOCKER_IMAGE_HASH "DockerImageHash"
 #define ATTR_DOCKER_NETWORKS "DockerNetworks"
 #define ATTR_DOCKER_NETWORK_TYPE "DockerNetworkType"
 #define ATTR_DOCKER_OVERRIDE_ENTRYPOINT  "DockerOverrideEntrypoint"
@@ -296,6 +300,7 @@
 #define ATTR_GRIDMANAGER_SELECTION_VALUE "GridmanagerSelectionValue"
 #define ATTR_MYPROXY_PASSWORD  "MyProxyPassword"
 #define ATTR_HARDWARE_ADDRESS  "HardwareAddress"
+#define ATTR_HAS_CGROUP  "HasCgroup"
 #define ATTR_HAS_CHECKPOINTING  "HasCheckpointing"
 #define ATTR_HAS_COMMON_FILES_TRANSFER  "HasCommonFilesTransfer"
 #define ATTR_HAS_CONTAINER  "HasContainer"
@@ -340,7 +345,6 @@
 #define ATTR_HIBERNATION_RAW_MASK  "HibernationRawMask"
 #define ATTR_HIBERNATION_METHOD  "HibernationMethod"
 #define ATTR_UNHIBERNATE  "Unhibernate"
-#define ATTR_CONTAINER_IS_COMMON "ContainerIsCommon"
 #define ATTR_HOLD_KILL_SIG  "HoldKillSig"
 #define ATTR_HOOK_KEYWORD  "HookKeyword"
 #define ATTR_HISTORY_RECORD_SOURCE  "HistoryRecordSource"
@@ -412,6 +416,20 @@
 #define ATTR_OCU_NAME  "OCUName"
 #define ATTR_OCU_WANTED  "OCUWanted"
 #define ATTR_OCU_STATE  "OCUState"
+#define ATTR_IS_BUNDLE_REQUEST  "IsBundleRequest" // marks a resource request as a slot-bundle request
+// Job attr ("+IsBundle = true"): this job's cluster is a slot bundle.  Also the
+// startd slot attr saying the claim on that slot is held for a slot bundle.
+#define ATTR_IS_BUNDLE  "IsBundle"
+#define ATTR_IS_BUNDLE_SUBMITTER  "IsBundleSubmitter" // submitter-ad marker: the reserved slot-bundle submitter
+#define ATTR_BUNDLE_ID  "BundleId"                // <schedd-name>#<cluster> identifying the bundle
+#define ATTR_BUNDLE_NUM_REQUESTED  "BundleNumRequested" // cluster ad: N, the slots the bundle wants
+#define ATTR_BUNDLE_NUM_SATISFIED  "BundleNumSatisfied" // cluster ad: claims already held for the bundle
+#define ATTR_BUNDLE_OLDEST_QDATE  "BundleOldestQDate"
+#define BUNDLE_SUBMITTER_NAME    "condor_bundle"
+#define ATTR_BUNDLES_IN_PROGRESS  "BundlesInProgress"       // bundles the negotiator is watching fill
+#define ATTR_BUNDLE_SLOTS_WANTED  "BundleSlotsWanted"       // slots those bundles still want
+#define ATTR_BUNDLE_SLOTS_MATCHED_TOTAL "BundleSlotsMatchedTotal" // slots matched for bundles since startup
+#define ATTR_BUNDLE_MAX_WAIT_SECONDS "BundleMaxWaitSeconds" // age of the longest-outstanding bundle
 #define ATTR_ORIG_JOB_CMD  "OrigCmd" 
 #define ATTR_JOB_CORE_DUMPED  "JobCoreDumped"
 #define ATTR_JOB_CORE_FILENAME  "JobCoreFileName"
@@ -421,7 +439,6 @@
 #define ATTR_JOB_CURRENT_FINISH_TRANSFER_OUTPUT_DATE  "JobCurrentFinishTransferOutputDate"
 #define ATTR_JOB_CURRENT_START_TRANSFER_INPUT_DATE  "JobCurrentStartTransferInputDate"
 #define ATTR_JOB_CURRENT_FINISH_TRANSFER_INPUT_DATE  "JobCurrentFinishTransferInputDate"
-#define ATTR_CUMULATIVE_TRANSFER_TIME  "CumulativeTransferTime"
 #define ATTR_JOB_DURATION  "JobDuration"
 #define ATTR_ENCRYPT_EXECUTE_DIRECTORY "EncryptExecuteDirectory"
 #define ATTR_EXECUTE_DIRECTORY_ENCRYPTED "ExecuteDirWasEncrypted"
@@ -440,7 +457,6 @@
 #define ATTR_JOB_LIMIT_DIRECTORY_ACCESS "LimitDirectoryAccess"
 #define ATTR_JOB_MOUNT_UNDER_SCRATCH "MountUnderScratch"
 #define ATTR_JOB_SPOOL_EXECUTABLE  "SpoolExecutable"
-#define ATTR_JOB_EXIT_STATUS  "ExitStatus"
 #define ATTR_JOB_EXIT_REQUIREMENTS  "ExitRequirements"
 #define ATTR_JOB_ID  "JobId"
 #define ATTR_JOB_FINISHED_HOOK_DONE  "JobFinishedHookDone"
@@ -489,10 +505,10 @@
 #define ATTR_JOB_REMOTE_USER_CPU  "RemoteUserCpu"
 #define ATTR_JOB_CUMULATIVE_REMOTE_SYS_CPU  "CumulativeRemoteSysCpu"
 #define ATTR_JOB_CUMULATIVE_REMOTE_USER_CPU  "CumulativeRemoteUserCpu"
+#define ATTR_JOB_RECONNECTED_DATE  "JobReconnectedDate"
 #define ATTR_JOB_DISCONNECTED_DATE  "JobDisconnectedDate"
 #define ATTR_JOB_REMOTE_WALL_CLOCK  "RemoteWallClockTime"
 #define ATTR_JOB_LAST_REMOTE_WALL_CLOCK "LastRemoteWallClockTime"
-#define ATTR_JOB_RUN_COUNT  "JobRunCount"
 #define ATTR_JOB_MAX_RETRIES "JobMaxRetries"
 #define ATTR_JOB_SUCCESS_EXIT_CODE "JobSuccessExitCode"
 #define ATTR_JOB_SANDBOX_JOBAD  "DropJobAdInSandbox"
@@ -599,6 +615,8 @@
 #define ATTR_DETECTED_CPUS  "DetectedCpus"
 #define ATTR_DETECTED_DISK  "DetectedDisk"
 #define ATTR_MIN_HOSTS  "MinHosts"
+#define ATTR_MIN_CONDOR_VERSION "MinCondorVersion"
+#define ATTR_MAX_CONDOR_VERSION "MaxCondorVersion"
 #define ATTR_MIPS  "Mips"
 #define ATTR_MPI_IS_MASTER  "MPIIsMaster"
 #define ATTR_MPI_MASTER_ADDR  "MPIMasterAddr"
@@ -669,7 +687,6 @@
 #define ATTR_OPSYS_LONG_NAME  "OpSysLongName"
 #define ATTR_OPSYS_SHORT_NAME  "OpSysShortName"
 #define ATTR_OPSYS_LEGACY  "OpSysLegacy"
-#define ATTR_ORIG_MAX_HOSTS  "OrigMaxHosts"
 #define ATTR_OS_USER  "OsUser"
 #define ATTR_OTHER_JOB_REMOVE_REQUIREMENTS  "OtherJobRemoveRequirements" 
 #define ATTR_OUTPUT_DESTINATION  "OutputDestination"
@@ -731,6 +748,7 @@
 #define ATTR_RESOURCE_REQUEST_COUNT "_condor_RESOURCE_COUNT"  // used in resource request ad
 #define ATTR_RESOURCE_REQUEST_CLUSTER "_condor_RESOURCE_CLUSTER"
 #define ATTR_RESOURCE_REQUEST_PROC "_condor_RESOURCE_PROC"
+#define ATTR_RESTRICT_TO_ANNEX "RestrictToAnnex"
 #define ATTR_RESTRICT_TO_AUTHENTICATED_IDENTITY "RestrictToAuthenticatedIdentity"
 #define ATTR_SLOT_AD  "SlotAd"
 #define ATTR_SLOT_TYPE  "SlotType"
@@ -838,6 +856,7 @@
 #define ATTR_SUSPEND  "Suspend"
 #define ATTR_SUSPEND_REASON  "SuspendReason"
 #define ATTR_SUSPEND_JOB_AT_EXEC  "SuspendJobAtExec"
+#define ATTR_TARGET_ANNEX_NAME "TargetAnnexName"
 #define ATTR_TARGET_TYPE  "TargetType"
 #define ATTR_TIME_TO_LIVE  "TimeToLive"
 #define ATTR_TOOL_DAEMON_ARGS1  "ToolDaemonArgs"
@@ -1285,6 +1304,12 @@ extern const char ATTR_SEC_AUTHENTICATED_USER [];
 #define ATTR_LAST_NEGOTIATION_CYCLE_PHASE2_CPU_TIME  "LastNegotiationCyclePhase2CpuTime"
 #define ATTR_LAST_NEGOTIATION_CYCLE_PHASE3_CPU_TIME  "LastNegotiationCyclePhase3CpuTime"
 #define ATTR_LAST_NEGOTIATION_CYCLE_PHASE4_CPU_TIME  "LastNegotiationCyclePhase4CpuTime"
+// Slot bundles are negotiated in a round of their own at the top of each cycle.
+#define ATTR_LAST_NEGOTIATION_CYCLE_ACTIVE_BUNDLES  "LastNegotiationCycleActiveBundles"
+#define ATTR_LAST_NEGOTIATION_CYCLE_BUNDLE_SUBMITTERS  "LastNegotiationCycleBundleSubmitters"
+#define ATTR_LAST_NEGOTIATION_CYCLE_BUNDLE_SLOTS_WANTED  "LastNegotiationCycleBundleSlotsWanted"
+#define ATTR_LAST_NEGOTIATION_CYCLE_BUNDLE_MATCHES  "LastNegotiationCycleBundleMatches"
+#define ATTR_LAST_NEGOTIATION_CYCLE_BUNDLE_DURATION  "LastNegotiationCycleBundleDuration"
 
 #define ATTR_JOB_MACHINE_ATTRS  "JobMachineAttrs"
 #define ATTR_MACHINE_ATTR_PREFIX  "MachineAttr"

@@ -24,6 +24,7 @@
 
 #include <vector>
 #include <string>
+#include <string_view>
 #include <limits>
 
 typedef std::vector<const char *> MACRO_SOURCES;
@@ -166,31 +167,31 @@ typedef struct macro_eval_context_ex : macro_eval_context {
 	// The intended use is:
 	//   auto_free_ptr value(param("param_name"));
 	//   if (value) { dprintf(D_ALWAYS, "param_name has value %s\n", value.ptr()); }
-	//
-	// NOTE: it is NOT SAFE to use this class as a member of a class or struct that you intend to copy.
-	//   This class has minimal support for copy construction/assigment using the swap() idiom, which necessary
-	//   for populating STL containers. but it does NOT support deep copying or reference counting
-	//   which would be needed to support its use as a member in a class that you intend to copy and keep
-	//   both copies around. 
+	// Like the param system itself, it treats null and "" as empty(), and treats empty() as false
+	// The class has minimal support for copy construction/assigment/move using the swap() idiom, which necessary
+	//   for populating STL containers. but it does NOT have reference counting which would be needed to support
+	//   its use as a member in a class that you intend to copy and expect the pointer not to change.
 	class auto_free_ptr {
 	public:
-		auto_free_ptr(char* str=NULL) : p(str) {}
+		auto_free_ptr() = default;
+		auto_free_ptr(char* str) : p(str) {}
 		friend void swap(auto_free_ptr& first, auto_free_ptr& second) { char*t = first.p; first.p = second.p; second.p = t; }
 		auto_free_ptr(const auto_free_ptr& that) { if (that.p) p = strdup(that.p); else p = nullptr; }
+		auto_free_ptr(auto_free_ptr&& that) noexcept { swap(*this,that); } // swap on move
 		auto_free_ptr & operator=(auto_free_ptr that) { swap(*this, that); return *this; } // swap on assigment.
 		~auto_free_ptr() { clear(); }
 		void set(char*str) { clear(); p = str; }   // set a new pointer, freeing the old pointer (if any)
 		void clear() { if (p) free(p); p = NULL; } // free the pointer if any
-		bool empty() { return ! (p && p[0]); }     // return true if there is some data, NULL and "" are both empty
+		bool empty() const { return ! (p && p[0]); }     // return true if there is some data, NULL and "" are both empty
 		char * detach() { char * t = p; p = NULL; return t; } // get the pointer, and remove it from this class without freeing it
 		char * ptr() { return p; }                 // get the pointer, may return NULL if no pointer
 		char * get() { return p; }                 // for compat with unique_ptr
 		char * release() { return detach(); }      // for compat with unique_ptr
-		const char * c_str() { return p?p:""; }    // return a printable pointer
+		const char * c_str() const { return p?p:""; }    // return a printable pointer
 		operator const char *() const { return const_cast<const char*>(p); } // get this pointer as type const char*
 		operator bool() const { return p!=NULL; }  // eval to true if there is a pointer, false if not.
 	private:
-		char * p;
+		char * p{nullptr};
 	};
 
 	int param_names_matching(Regex& re, std::vector<std::string>& names);
@@ -268,6 +269,16 @@ typedef struct macro_eval_context_ex : macro_eval_context {
 								std::string & name_used,
 								const char ** pdef_value,
 								const MACRO_META **ppmet);
+
+	// Returns true if the value param() would use for name (including SUBSYS. and LOCALNAME. prefixed
+	// forms) comes only from the root config (i.e. the global and local config files, detected values,
+	// or the param table default). Returns false if the value was set by USER_CONFIG_FILE, _CONDOR_*
+	// environment variables, a runtime/persistent config, or any config source processed after the
+	// root config (i.e. a daemon specific config file). Also returns false if config metadata was not
+	// loaded (see CONFIG_OPT_WANT_META) since the source can not be verified.
+	// Note: only checks where name was defined, not the sources of any macros its value references.
+	// If location is not NULL it is set to the location (source file and line) that set name.
+	bool param_defined_by_root_config(const char * name, std::string * location = nullptr);
 
 	MACRO_SET * param_get_macro_set();
 	void init_param_context(MACRO_EVAL_CONTEXT & ctx);
@@ -464,14 +475,13 @@ typedef struct macro_eval_context_ex : macro_eval_context {
 // the HASHITER can only be defined with c++ linkage
 class HASHITER {
 public:
-	int opts;
-	int ix; int id; int is_def;
-	MACRO_DEF_ITEM * pdef; // for use when default comes from per-daemon override table.
+	int opts{0};
+	int ix{0}; int id{0}; int is_def{0};
+	MACRO_DEF_ITEM * pdef{nullptr}; // for use when default comes from per-daemon override table.
 	MACRO_SET & set;
 	HASHITER(MACRO_SET & setIn, int options=0) : opts(options), ix(0), id(0), is_def(0), pdef(NULL), set(setIn) {}
-	HASHITER( const HASHITER & rhs) :
-	opts(rhs.opts), ix(rhs.ix), is_def(rhs.is_def), pdef(rhs.pdef), set(rhs.set)
-	{ }
+	HASHITER(const HASHITER & rhs) = default;
+	HASHITER(HASHITER&& rhs) = default;
 	HASHITER & operator =( const HASHITER & rhs ) {
 		if( this != & rhs ) {
 			this->opts = rhs.opts;
@@ -594,6 +604,7 @@ int write_config_file(const char* pathname, int options);
 
 	// expand $(N) from value against arguments in argstr
 	// returns a malloc()'d ptr to expanded value, caller is responsible from freeing returned pointer.
+	// returns nullptr if expansion hits a limit, i.e. an argument refers to itself as $(N)
 	char * expand_meta_args(const char *value, std::string & argstr);
 
 	// macro stream class wraps up an fp or string so that the macro parser can read from either.
@@ -621,8 +632,8 @@ int write_config_file(const char* pathname, int options);
 		void set(FILE* _fp, MACRO_SOURCE& _src) { fp =  _fp; src = &_src; }
 		void reset() { fp = NULL; src = NULL; }
 	protected:
-		FILE * fp;
-		MACRO_SOURCE * src;
+		FILE * fp{nullptr};
+		MACRO_SOURCE * src{nullptr};
 	};
 
 	// A MacroStream that owns the FILE* and MACRO_SOURCE
@@ -640,7 +651,7 @@ int write_config_file(const char* pathname, int options);
 		bool open(const char * filename, bool is_command, MACRO_SET& set, std::string &errmsg);
 		int  close(MACRO_SET& set, int parsing_return_val);
 	protected:
-		FILE * fp;
+		FILE * fp{nullptr};
 		MACRO_SOURCE src;
 	};
 
@@ -662,8 +673,8 @@ int write_config_file(const char* pathname, int options);
 		// the buffer must be null terminated, so this can be used as a string.
 		const char * remainder(size_t & cb) {
 			if ( ! ls.at_eof()) {
-				cb = ls.cb - ls.ix;
-				return ls.str+ls.ix;
+				cb = ls.data.size() - ls.ix;
+				return ls.data.data() + ls.ix;
 			} else {
 				cb = 0;
 				return NULL;
@@ -676,16 +687,20 @@ int write_config_file(const char* pathname, int options);
 		// this class allows for template expansion of getline_implementation
 		class LineSource {
 		public:
-			const char* str;
-			ssize_t cb;
-			size_t ix;
+			std::string_view data;
+			size_t ix{0};
 
-			LineSource(const char*p, ssize_t _cb, size_t _ix) : str(p), cb(_cb), ix(_ix) {}
-			~LineSource() {}
+			// a negative _cb means p is null terminated
+			LineSource(const char*p, ssize_t _cb, size_t _ix) { init(p, _cb, _ix); }
 
-			void init(const char*p, ssize_t _cb, size_t _ix) { str = p; cb = _cb; ix = _ix; }
-			void clear() { str= NULL; cb = 0; ix = 0; }
-			int at_eof();
+			void init(const char*p, ssize_t _cb, size_t _ix) {
+				if ( ! p) { data = {}; }
+				else if (_cb < 0) { data = std::string_view(p); }
+				else { data = std::string_view(p, _cb); }
+				ix = _ix;
+			}
+			void clear() { data = {}; ix = 0; }
+			bool at_eof() const { return ix >= data.size(); }
 			char *readline(char *s, int cb); // returns up to \n, for use only by getline_implementation
 		};
 

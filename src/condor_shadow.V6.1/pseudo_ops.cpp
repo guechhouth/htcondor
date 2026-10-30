@@ -49,6 +49,7 @@
 #include <regex>
 
 #include "catalog_utils.h"
+#include "common_files_check.h"
 #include "job_ad_instance_recording.h"
 #include "cxfer_state.h"
 #include "classad_string_utils.h"
@@ -1125,11 +1126,19 @@ UniShadow::before_common_file_transfer(
 	const std::string & cifName,
 	const std::string & commonInputFiles
 ) {
-	dprintf( D_ALWAYS, "Starting common files transfer.\n" );
 	CommonFilesEvent cfStartEvent;
 	cfStartEvent.setType( CommonFilesEventType::TransferStarted );
+	if (remRes) {
+	#ifdef COMMON_FILES_EVENT_HAS_EXECUTE_PROPS
+		ClassAd & props = cfStartEvent.setProp();
+	#else
+		ClassAd dummy; // TODO: add props to CommonFilesEvent?
+		ClassAd & props = dummy;
+	#endif
+		remRes->populateExecuteEvent(cfStartEvent.SlotName(), props);
+	}
+	dprintf( D_ALWAYS, "Starting common files transfer to %s\n", cfStartEvent.SlotName().c_str() );
 	uLog.writeEvent( & cfStartEvent, jobAd );
-
 
 	ClassAd commonAd;
 	CopyAttribute(
@@ -1154,10 +1163,17 @@ UniShadow::before_common_file_transfer(
 		EXCEPT( "UniShadow::do_common_file_transfer(): Init() failed." );
 	}
 	this->commonFTO->setPeerVersion( this->getStarterVersion() );
+#ifdef WIN32
+	// Create_Thread with the attendant socket duplication is failing on some
+	// Windows machines (re: htcondor-support), and it isn't really non-blocking
+	// on Windows anyway, so lets be explict about using blocking mode.
+	this->commonFTO->SetServerShouldBlock( true );
+#else
 	// This is broken on Windows, but we really want our timer to fire
 	// during the transfer process.  Not clear if the progress function
 	// will always be called often enough to be useful for keeping-alive.
 	this->commonFTO->SetServerShouldBlock( false );
+#endif
 
 
 	ClassAd guidance;
@@ -1670,22 +1686,35 @@ UniShadow::start_staging_only_conversation(
 		EXCEPT( "start_staging_only_conversation(): failed to acquire original claim ID.\n");
 	}
 
+	//
+	// Tell the schedd what we staged, so that every job which maps these
+	// copies can verify that they're the files it asked for; see
+	// common_files_check.h.  We're already running as the job's owner.
+	//
+	ClassAd extraAttrs;
+	addStagedCatalogsReport( extraAttrs, * jobAd, common_file_catalogs, internalToSimpleNameMap );
+
 	int timeout = 20;
 	std::vector< std::pair< std::string, const ClassAd * > > resources;
 	resources.emplace_back( claimID, slotAd );
 	int rval = schedd.offerResources(
 		resources, user, timeout,
-		originalClaimID
-		/*, sizeOnDiskInMB */
+		originalClaimID,
+		-1 /* sizeOnDiskInMB */,
+		& extraAttrs
 	);
 	free( originalClaimID );
 
-	if(! rval) {
-		// Assuming that it's most likely that offerResources() failed
-		// because the schedd was busy, we should try again later when
-		// it isn't.
+	if( rval != OK ) {
+		//
+		// Arguably, we should retry `rval == -1` a few times, because it's
+		// likely that the schedd is just busy, and redoing the transfer
+		// because of that just makes the problem worse.  However, if
+		// `rval == NOT_OK`, then we should just give up right away and let
+		// the schedd get its act together.
+		//
 		co_return VACATE_REQUEUE_ABORT(
-			"Failed to offer schedd resources, aborting to try again when it's less busy.\n",
+			"Failed to tell schedd that the common file transfer completed (probably because it's too busy).  The schedd will try to run the corresponding job(s) again later.\n",
 			CONDOR_HOLD_CODE::JobNotStarted, JOB_NOT_STARTED_SUB_CODE::OfferResourcesFailed
 		);
 	}
@@ -2171,7 +2200,19 @@ UniShadow::pseudo_request_guidance( const ClassAd & request, ClassAd & guidance 
 		// in-job guidance would have to specify the request type.)
 		if( use_guidance_in_job_ad ) {
 			dprintf( D_TEST, "Using guidance in job ad.\n" );
-			return send_guidance_from_job_ad( request, guidance );
+			GuidanceResult rv = send_guidance_from_job_ad( request, guidance );
+
+			// Lets the test exercise a shadow-side failure that kills
+			// the starter while the starter waits for this reply.
+			bool vacate = false;
+			if( guidance.LookupBool( "_condor_test_vacate_requeue_abort", vacate ) && vacate ) {
+				guidance = VACATE_REQUEUE_ABORT(
+					"Test-requested vacate during guidance.",
+					CONDOR_HOLD_CODE::JobNotStarted,
+					JOB_NOT_STARTED_SUB_CODE::CommonTransferFailed
+				);
+			}
+			return rv;
 		}
 
 		if( thisRemoteResource->download_transfer_info.xfer_status == XFER_STATUS_UNKNOWN ) {
@@ -2388,6 +2429,24 @@ UniShadow::pseudo_request_guidance( const ClassAd & request, ClassAd & guidance 
 		std::string command;
 		guidance.LookupString(ATTR_COMMAND, command);
 		dprintf( D_TEST, "Sending (job setup) guidance with command %s\n", command.c_str());
+		return GuidanceResult::Command;
+	} else if( requestType == RTYPE_CHECKPOINT_TAKEN ) {
+		// dprintf( D_ZKM, "Received request for guidance about checkpoint taken.\n" );
+
+		// For now, if the startd thinks the job should be evicted, then
+		// don't restart after the checkpoint.  Otherwise, restart.
+		bool claim_is_closing = false;
+		LookupBoolInContext( request, ATTR_EP_CHECKPOINT_RESTART, claim_is_closing );
+		dprintf( D_ZKM, "Received request for guidance about checkpoint taken; claim_is_closing is %s\n", claim_is_closing ? "true" : "false" );
+		if( claim_is_closing ) {
+			guidance.InsertAttr( ATTR_COMMAND, COMMAND_DONT_RESTART );
+		} else {
+			guidance.InsertAttr( ATTR_COMMAND, COMMAND_RESTART );
+		}
+
+		std::string command;
+		guidance.LookupString(ATTR_COMMAND, command);
+		dprintf( D_ZKM, "Sending (checkpoint taken) guidance with command %s\n", command.c_str());
 		return GuidanceResult::Command;
 	}
 

@@ -22,7 +22,6 @@
 
 #include <climits>
 #include <math.h>
-#include <iomanip>
 
 #include "condor_accountant.h"
 #include "AccountantDB.h"
@@ -151,7 +150,7 @@ void Accountant::Initialize(GroupEntry* root_group)
       RemoteUserPriorityFactor=1;
   }
 
-  MaxAcctLogSize = param_integer("MAX_ACCOUNTANT_DATABASE_SIZE",1'000'000);
+  MaxAcctLogSize = param_longlong("MAX_ACCOUNTANT_DATABASE_SIZE",1'000'000);
 
   if ( ! param(LogFileName, "ACCOUNTANT_DATABASE_FILE")) {
 	tmp = param("SPOOL");
@@ -175,7 +174,7 @@ void Accountant::Initialize(GroupEntry* root_group)
   dprintf(D_ACCOUNTANT,"DEFAULT_PRIO_FACTOR=%f\n",DefaultPriorityFactor);
   dprintf(D_ACCOUNTANT,"ACCOUNTANT_LOCAL_DOMAIN=%s\n",
 				  AccountantLocalDomain.c_str());
-  dprintf( D_ACCOUNTANT, "MAX_ACCOUNTANT_DATABASE_SIZE=%d\n",
+  dprintf( D_ACCOUNTANT, "MAX_ACCOUNTANT_DATABASE_SIZE=%lld\n",
 		   MaxAcctLogSize );
 
   if (!db) {
@@ -1141,7 +1140,7 @@ void Accountant::UpdatePriorities()
 		  if( statbuf.st_size * 2 > MaxAcctLogSize ) {
 			  MaxAcctLogSize = statbuf.st_size * 2;
 			  dprintf( D_ACCOUNTANT, "Database has grown, expanding "
-					   "MAX_ACCOUNTANT_DATABASE_SIZE to %d\n", 
+					   "MAX_ACCOUNTANT_DATABASE_SIZE to %lld\n", 
 					   MaxAcctLogSize );
 		  }
 	  }
@@ -1317,8 +1316,17 @@ void Accountant::CheckMatches(std::vector<ClassAd *> &ResourceList)
     db->BeginTransaction();
     db->ForEachInTable( AccountantTable::Customer,
         [&](const std::string& resName, ClassAd* /* resAd */) -> bool {
+            // All three of these are re-accumulated by the AddMatch() loop
+            // below, so all three must be zeroed here, or they grow without
+            // bound by the number of claimed slots on every cycle.
+            db->SetAttributeInt( AccountantTable::Customer,
+                resName, ResourcesUsedAttr, 0
+            );
             db->SetAttributeFloat( AccountantTable::Customer,
                 resName, WeightedResourcesUsedAttr, 0
+            );
+            db->SetAttributeFloat( AccountantTable::Customer,
+                resName, HierWeightedResourcesUsedAttr, 0
             );
             return true;
         }
