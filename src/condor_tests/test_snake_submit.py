@@ -19,7 +19,6 @@ class TestSnakemakeSubmit:
         """
         with patch("htcondor_cli.snake.importlib.util.find_spec", return_value=MagicMock()):
             yield
-
             
     # === INTEGRATION TESTS: Argument parsing through REMAINDER ==="
 
