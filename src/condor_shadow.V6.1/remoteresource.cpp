@@ -670,6 +670,11 @@ void
 RemoteResource::closeClaimSock( void )
 {
 	if( claim_sock ) {
+			// do_REMOTE_syscall() may still be on the stack using the
+			// global alias; null it so it can tell the socket is gone.
+		if( syscall_sock == claim_sock ) {
+			syscall_sock = nullptr;
+		}
 		daemonCore->Cancel_Socket( claim_sock );
 		delete claim_sock;
 		claim_sock = NULL;
@@ -1494,6 +1499,17 @@ RemoteResource::updateFromStarter( ClassAd* update_ad )
 		}
 	}
 
+		// The docker image the starter actually ran, identified by its
+		// content hash.  While it doesn't change during any particular
+		// instance, it may change from instance to instance, so update
+		// it if it's new or if it changed.
+	if( update_ad->LookupString(ATTR_DOCKER_IMAGE_HASH, string_value) ) {
+		std::string prev_hash;
+		if( ! jobAd->LookupString(ATTR_DOCKER_IMAGE_HASH, prev_hash) || prev_hash != string_value ) {
+			jobAd->Assign(ATTR_DOCKER_IMAGE_HASH, string_value);
+		}
+	}
+
 	if( update_ad->LookupString(ATTR_EXCEPTION_HIERARCHY,string_value) ) {
 		jobAd->Assign(ATTR_EXCEPTION_HIERARCHY, string_value);
 	}
@@ -1605,7 +1621,7 @@ RemoteResource::updateFromStarter( ClassAd* update_ad )
 			if( 0 == strcasecmp( prefix.c_str(), "Common" ) ) {
 				auto stats = shadow->getCommonTransferInfoStats();
 				if( stats ) {
-					c.Insert( "TransferCommonStats", (* stats).Copy() );
+					c.Insert( ATTR_TRANSFER_COMMON_STATS, (* stats).Copy() );
 				}
 			}
 
@@ -2177,7 +2193,6 @@ RemoteResource::hadContact( void )
 {
 	last_job_lease_renewal = time(0);
 	jobAd->Assign( ATTR_LAST_JOB_LEASE_RENEWAL, last_job_lease_renewal );
-	shadow->m_reconnect_record.m_last_contact_time = last_job_lease_renewal;
 }
 
 
@@ -2219,6 +2234,15 @@ RemoteResource::reconnect( void )
 		}
 		shadow->m_reconnect_record.m_activation_time = activation.StartTime;
 	}
+
+		// T2 in the ShadowReconnectLog is the last contact before the
+		// disconnect.  Nothing renews the lease while we're reconnecting,
+		// so last_job_lease_renewal still holds that time (or the value
+		// from the job ad, if this shadow was started in reconnect mode).
+		// Don't set this in hadContact(), because the successful reconnect
+		// itself calls hadContact() right before the record is logged.
+	shadow->m_reconnect_record.m_last_contact_time = last_job_lease_renewal;
+
 	if( lease_duration < 0 ) {
 			// if it's our first time, figure out what we've got to
 			// work with...

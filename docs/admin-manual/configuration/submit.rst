@@ -36,8 +36,8 @@ Job Submission Configuration Options
     not specify how much it needs using the
     :subcom:`request_memory[and JOB_DEFAULT_REQUESTMEMORY]`
     submit command. If this variable is not defined, then the default is
-    defined by the expression :ad-expr:`128`
-
+    defined by the expression :ad-expr:`128`.
+    Does not apply to Scheduler or Local universe jobs.
 
 :macro-def:`JOB_DEFAULT_REQUESTDISK`
     The amount of disk in KiB to acquire for a job, if the job does not
@@ -46,13 +46,15 @@ Job Submission Configuration Options
     submit command. If the job defines the value, then that value takes
     precedence. If not set, then the default is the maximum of 1 GB
     and 125% of the transfer input size, which is the expression
-    :ad-expr:`MAX({1024, (TransferInputSizeMB+1) * 1.25}) * 1024`
+    :ad-expr:`MAX({1024, (TransferInputSizeMB+1) * 1.25}) * 1024`.
+    Does not apply to Scheduler or Local universe jobs.
 
 :macro-def:`JOB_DEFAULT_REQUESTCPUS`
     The number of CPUs to acquire for a job, if the job does not specify
     how many it needs using the :subcom:`request_cpus[and JOB_DEFAULT_REQUESTCPUS]`
     submit command. If the job defines the value, then that value takes
     precedence. If not set, then the default is 1.
+    Does not apply to Scheduler or Local universe jobs.
 
 :macro-def:`DEFAULT_JOB_MAX_RETRIES`
     The default value for the maximum number of job retries, if the
@@ -148,13 +150,24 @@ do not specify their own with:
     IF_NEEDED. If the value is not one of these, then IF_NEEDED will
     be used.
 
+:macro-def:`SUBMIT_DEFAULT_REQUIRE_COMMON_FILES`
+    Provides a default value for the submit command
+    :subcom:`require_common_files[and SUBMIT_DEFAULT_REQUIRE_COMMON_FILES]`
+    if the submit file does not supply a value. The default is ``False``.
+
 :macro-def:`SUBMIT_REQUEST_MISSING_UNITS`
     If set to the string ``error``, it is an error to submit a job with a 
     :subcom:`request_memory` or :subcom:`request_disk` with a unitless
     value.  If set to ``warn``, a warning is printed to the screen, but
     submit continues. Default value is unset (neither warn nor error).
     :jira:`1837`
-    
+
+:macro-def:`SUBMIT_PREVENT_MULTI_QUEUE`
+    A boolean expression that when True, causes :tool:`condor_submit` to
+    treat multiple ``QUEUE`` statements in a submit file as an error in
+    all cases and not just with late materialization.
+    The default is True.
+
 :macro-def:`SUBMIT_SEND_RESCHEDULE`
     A boolean expression that when False, prevents :tool:`condor_submit` from
     automatically sending a :tool:`condor_reschedule` command as it

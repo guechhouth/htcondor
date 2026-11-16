@@ -17,9 +17,10 @@ from ornithology import (
 # 128 KiB common input file.  Since the startd only has 500 KiB of disk, the
 # only way it can run more than one job is through common-files sharing.
 #
-# We submit six jobs, knowing that only three will fit, because at some point
-# we'll probably want to make sure that the running total caps out at three
-# and that the second set of three runs without the negotiator.
+# We submit four jobs, knowing that only two will fit, because at some point
+# we'll probably want to make sure that the running total caps out at two
+# and that the second pair runs without the negotiator.
+#
 # -----------------------------------------------------------------------------
 
 @action
@@ -37,7 +38,8 @@ def the_condor( test_dir ):
             "CLAIM_WORKLIFE":   0,
             "DISK":             500,
 
-            "MODIFY_REQUEST_EXPR_REQUESTDISK": "quantize(RequestDisk - $(CATALOG_SPACE), (Target.DiskQuantum ?: 1) )",
+            "DiskQuantum":      1,
+            "STARTD_ATTRS":     "$(STARTD_ATTRS) DiskQuantum",
         },
     ) as the_condor:
         yield the_condor
@@ -70,12 +72,12 @@ def the_running_jobs( the_condor, the_common_file ):
 
     job_handle = the_condor.submit(
         description=job_description,
-        count=6,
+        count=4,
     )
 
     assert job_handle.wait(
         timeout=120,
-        condition=ClusterState.running_exactly(3),
+        condition=ClusterState.running_exactly(2),
         fail_condition=ClusterState.any_terminal,
     )
 

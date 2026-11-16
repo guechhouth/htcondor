@@ -1678,9 +1678,6 @@ Resource::process_update_ad(ClassAd & public_ad, int snapshot) // change the upd
 			}
 			if(! StartdCronJobParams::attributeIsSumMetric( name ) ) { continue; }
 			if(! StartdCronJobParams::getResourceNameFromAttributeName( name, resourceName )) { continue; }
-			if(! param_boolean( "ADVERTISE_CMR_UPTIME_SECONDS", false )) {
-				deleteList.push_back( name );
-			}
 
 			classad::Value v;
 			double uptimeValue;
@@ -1690,9 +1687,25 @@ Resource::process_update_ad(ClassAd & public_ad, int snapshot) // change the upd
 				continue;
 			}
 
+			//
+			// Publish `UptimeGPUsSeconds` and `LastUpdateUptimeGPUsSeconds`
+			// so that the starter can correctly compute job lifetime metrics;
+			// see HTCONDOR-4017.
+			//
+			std::string lastUpdateName = "LastUpdate" + name;
+			time_t lastUpdateTime;
+			if( public_ad.LookupInteger( lastUpdateName, lastUpdateTime ) ) {
+				public_ad.Assign( name, uptimeValue );
+			}
+
+			//
+			// Compute the device's average usage over our uptime.
+			//
+
 			auto birth = daemonCore->getStartTime();
 			time_t duration = time(nullptr) - birth;
 			double average = uptimeValue / duration;
+
 			// Since we don't have a whole-machine ad, we won't bother to
 			// include the device name in this attribute name; people will
 			// have to check the AssignedGPUs attribute.  This will suck
@@ -1702,42 +1715,28 @@ Resource::process_update_ad(ClassAd & public_ad, int snapshot) // change the upd
 			public_ad.Assign( computedName, average );
 
 		} else if (name.find("StartOfJob") == 0) {
+			// For reasons (see HTCONDOR-4017), we now compute GPUsAverageUsage
+			// in the starter.  We can therefore probably jettison the whole
+			// `StartOfJob` thing entirely, but since we want to replace the
+			// generic CMR code with GPU-specific code anyway, let's not bother
+			// to make this change any larger than we have to.
+			//
+			// Therefore, let's skip doing this computation; the slot's value
+			// should come from the starter, and there's no point in worrying
+			// about accidentally overwriting that value with a buggy one.
 
-			// Compute the SUM metrics' *Usage values.  The PEAK metrics
-			// have already inserted their *Usage values into the ad.
-			std::string usageName;
+			// Remove some of internal implementation-specific attributes
+			// that we don't want to make attractive nuisances.  We should
+			// actually filter the ones the starter needs out when we're
+			// writing to the collector, but since we won't need to do that
+			// after the pending rewrite, don't bother for now.
+
 			std::string uptimeName = name.substr(10);
-			if (! StartdCronJobParams::getResourceNameFromAttributeName(uptimeName, usageName)) { continue; }
-			usageName += "AverageUsage";
-
-			std::string lastUpdateName = "LastUpdate" + uptimeName;
 			std::string firstUpdateName = "FirstUpdate" + uptimeName;
-
-			// Note that we calculate the usage rate only for full
-			// sample intervals.  This eliminates the imprecision of
-			// the sample interval in which the job started; since we
-			// can't include the usage from the sample interval in
-			// which the job ended, we also don't include the time
-			// the job was running in that interval.  The computation
-			// is thus exact for its time period.
-			std::string usageExpr;
-			formatstr(usageExpr, "(%s - %s)/(%s - %s)",
-				uptimeName.c_str(), name.c_str(),
-				lastUpdateName.c_str(), firstUpdateName.c_str());
-
-			classad::Value v;
-			if (! public_ad.EvaluateExpr(usageExpr, v)) { continue; }
-			double usageValue;
-			if (! v.IsNumber(usageValue)) { continue; }
-			public_ad.Assign(usageName, usageValue);
-
-			deleteList.push_back(uptimeName);
-			deleteList.push_back(name);
-			deleteList.push_back(lastUpdateName);
 			deleteList.push_back(firstUpdateName);
 
+			deleteList.push_back(name);
 		} else if( name.find( "StartOfJobUptime" ) == 0
-		  || (name != "LastUpdate" && name.find( "LastUpdate" ) == 0)
 		  || name.find( "FirstUpdate" ) == 0 ) {
 			deleteList.push_back( name );
 		}
@@ -1809,6 +1808,7 @@ void Resource::publish_single_slot_ad(ClassAd & ad, time_t last_heard_from, Purp
 		// the collector will set this, but for direct query, we have to set this ourselves
 		ad.Assign(ATTR_LAST_HEARD_FROM, last_heard_from);
 		// the dc_collector object normally sets this
+		// TODO: remove this, should no longer be necessary
 		ad.Assign(ATTR_DAEMON_START_TIME, daemonCore->getStartTime());
 	}
 
@@ -2653,6 +2653,11 @@ void Resource::publish_static(ClassAd* cap)
 	// We need these for both public and private ads
 	cap->Assign(ATTR_STARTD_IP_ADDR, daemonCore->InfoCommandSinfulString());
 	cap->Assign(ATTR_NAME, r_name);
+	// ATTR_DAEMON_START_TIME is injected by the dc_collector object
+	// but we need it set earlier and for ads that are never sent to the collector
+	// so we can use it in policy expressions
+	cap->Assign(ATTR_DAEMON_START_TIME, daemonCore->getStartTime());
+	cap->Assign(ATTR_DAEMON_LAST_RECONFIG_TIME, daemonCore->getReconfigTime());
 
 	cap->Assign(ATTR_IS_LOCAL_STARTD, param_boolean("IS_LOCAL_STARTD", false));
 
@@ -4100,10 +4105,50 @@ Resource * create_dslot(Resource * rip, ClassAd * req_classad, bool take_donor_c
 			// fall back on the original backed-up ad.
 		if ( !must_modify_request ) {
 				// save an unmodified backup copy of the req_classad
-			unmodified_req_classad = new ClassAd( *req_classad );  
+			unmodified_req_classad = new ClassAd( *req_classad );
 		}
 
-			// Now make the modifications.
+
+		//
+		// See HTCONDOR-3930: we can't correctly divide the data and (prompting)
+		// job slot's disk correctly in the presence of quantization, because
+		// that may require more space than we allocated.  The problem we're
+		// trying to fix here is that the submitter (with the previous math)
+		// increasing RequestDisk wouldn't solve the problem.  The reason we're
+		// fixing it _here_ is to prevent an admin's override of the
+		// MODIFY_REQUEST_EXPR_RequestDisk knob from breaking things.
+		//
+		// To do that, we compute how much space the job will save by using
+		// common files (if any), and subtract that off the request disk the
+		// MODIFY epxression sees before evaluating it.  That will result
+		// in a request that at most one disk quantum too large (unless the
+		// admin is doing weird stuff), so we'll subtract a whole one off
+		// to make sure everything fits.
+		//
+		std::string catalog_space_str;
+		param( catalog_space_str, "CATALOG_SPACE" );
+		ExprTree * cs_tree = NULL;
+		ParseClassAdRvalExpr( catalog_space_str.c_str(), cs_tree );
+
+		long long catalog_space = -1;
+		long long modified_request_disk = -1;
+		classad::Value cs_value;
+		if( cs_tree &&
+		    EvalExprToNumber(cs_tree, req_classad, mach_classad, cs_value) &&
+		    cs_value.IsNumber(catalog_space)
+		) {
+			long long request_disk = -1;
+			if( req_classad->LookupInteger( ATTR_REQUEST_DISK, request_disk ) ) {
+				if( catalog_space != 0 ) {
+					modified_request_disk = request_disk - catalog_space;
+					dprintf( D_FULLDEBUG, "Pre adjusting %s from %lld to %lld to reflect use of common files.\n", ATTR_REQUEST_DISK, request_disk, modified_request_disk );
+					req_classad->Assign( ATTR_REQUEST_DISK, modified_request_disk );
+				}
+			}
+		}
+		if( cs_tree ) { delete cs_tree; }
+
+		// Now make the modifications.
 		static const char* resources[] = {ATTR_REQUEST_CPUS, ATTR_REQUEST_DISK, ATTR_REQUEST_MEMORY, NULL};
 		for (int i=0; resources[i]; i++) {
 			std::string knob("MODIFY_REQUEST_EXPR_");
@@ -4121,6 +4166,31 @@ Resource * create_dslot(Resource * rip, ClassAd * req_classad, bool take_donor_c
 					req_classad->Assign(resources[i],val);
 				}
 				if (tree) delete tree;
+			}
+		}
+
+		//
+		// The default MODIFY_REQUEST_EXPR_RequestDisk quantizes (rounds up).
+		// The extra comes from the data slot, which might be left with too
+		// little as a result.  So if the job is using common files, decrease
+		// its requst disk to compensate.
+		//
+		// See HTCONDOR-3930 for why we do this particular computation.
+		//
+		if( catalog_space != 0 ) {
+			long long new_request_disk;
+			if( req_classad->LookupInteger( ATTR_REQUEST_DISK, new_request_disk ) ) {
+				// If the modified request disk wasn't changed, don't correct
+				// for rounding that didn't happen.
+				if( new_request_disk != modified_request_disk ) {
+					long long quantum = param_integer( "CXFER_ADJUSTMENT_QUANTUM", 1024 );
+					mach_classad->LookupInteger( "DiskQuantum", quantum );
+					int quanta = param_integer( "CXFER_ADJUSTMENT_QUANTA", 1 );
+
+					dprintf( D_FULLDEBUG, "Post adjusting %s from %lld to %lld to reflect use of common files.\n", ATTR_REQUEST_DISK, new_request_disk, new_request_disk - (quantum * quanta) );
+					new_request_disk -= (quantum * quanta);
+					req_classad->Assign( ATTR_REQUEST_DISK, new_request_disk );
+				}
 			}
 		}
 

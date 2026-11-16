@@ -33,8 +33,12 @@
 ## metaknob names always start with $ and a category name.
 ##
 
+[ALLOW_COMMON_FILES_ON_LVS]
+default=false
+type=bool
+
 [CHECK_REACTIVATE_AFTER_CHECKPOINT]
-default=true
+default=false
 type=bool
 
 [STARTER_DIAGNOSTIC_send_ep_logs]
@@ -52,6 +56,11 @@ tag=startd
 [ENABLE_KERNEL_TUNING]
 default=true
 type=bool
+
+[KERNEL_TUNING_LIMIT_DIRTY_BYTES]
+default=false
+type=bool
+description=When true, the kernel tuning script limits /proc/sys/vm/dirty_bytes even on machines without cgroup v1 or a startd
 
 [KERNEL_TUNING_LOG]
 default=$(LOG)/KernelTuning.log
@@ -284,6 +293,11 @@ description=Directory for condor credentials
 [QUERY_TIMEOUT]
 default=60
 type=int
+
+[HA_COLLECTOR_PROBE_TIMEOUT]
+default=10
+type=int
+description=Timeout in seconds for the reachability probe used to fail fast over an unresponsive collector when multiple collectors are configured for high availability. A value <= 0 disables the probe, falling back to the full QUERY_TIMEOUT.
 
 [LIBVIRT_XML_SCRIPT]
 default=$(LIBEXEC)/libvirt_simple_script.awk
@@ -682,6 +696,12 @@ customization=normal
 tags=dagman,dagman_main
 restart=never
 
+[DAGMAN_MAX_HOLD_SCRIPTS_CEILING]
+default=40
+type=int
+tags=dagman,dagman_main
+restart=never
+
 [DAGMAN_MAX_JOB_HOLDS]
 default=100
 type=int
@@ -695,10 +715,22 @@ customization=normal
 tags=dagman,dagman_main
 restart=never
 
+[DAGMAN_MAX_JOBS_IDLE_CEILING]
+default=2000
+type=int
+tags=dagman,dagman_main
+restart=never
+
 [DAGMAN_MAX_JOBS_SUBMITTED]
 default=0
 type=int
 customization=normal
+tags=dagman,dagman_main
+restart=never
+
+[DAGMAN_MAX_JOBS_SUBMITTED_CEILING]
+default=0
+type=int
 tags=dagman,dagman_main
 restart=never
 
@@ -709,10 +741,22 @@ customization=normal
 tags=dagman,dagman_main
 restart=never
 
+[DAGMAN_MAX_POST_SCRIPTS_CEILING]
+default=40
+type=int
+tags=dagman,dagman_main
+restart=never
+
 [DAGMAN_MAX_PRE_SCRIPTS]
 default=20
 type=int
 customization=normal
+tags=dagman,dagman_main
+restart=never
+
+[DAGMAN_MAX_PRE_SCRIPTS_CEILING]
+default=40
+type=int
 tags=dagman,dagman_main
 restart=never
 
@@ -730,6 +774,12 @@ restart=never
 
 [DAGMAN_MAX_SUBMITS_PER_INTERVAL]
 default=100
+type=int
+tags=dagman,dagman_main
+restart=never
+
+[DAGMAN_MAX_SUBMITS_PER_INTERVAL_CEILING]
+default=200
 type=int
 tags=dagman,dagman_main
 restart=never
@@ -787,6 +837,12 @@ restart=never
 
 [DAGMAN_USER_LOG_SCAN_INTERVAL]
 default=5
+type=int
+tags=dagman,dagman_main
+restart=never
+
+[DAGMAN_USER_LOG_SCAN_INTERVAL_FLOOR]
+default=1
 type=int
 tags=dagman,dagman_main
 restart=never
@@ -1161,7 +1217,7 @@ type=string
 tags=had,AbstractReplicatorStateMachine
 
 [TRANSFER_JOB_ATTRS]
-default=NumShadowStarts
+default=NumShadowStarts,DAGNodeName
 type=string
 
 [MAX_TRANSFER_LIFETIME]
@@ -1915,7 +1971,7 @@ type=bool
 tags=starter
 
 [SINGULARITY_ADD_ROCM_FLAG]
-default=true
+default=false
 type=bool
 tags=starter
 
@@ -2007,7 +2063,7 @@ tags=startd,startd_main
 
 # ResidentSetSize is required by MemoryUsage.
 [SYSTEM_STARTD_JOB_ATTRS]
-default=ImageSize, ExecutableSize, JobUniverse, NiceUser, CPUsUsage, ResidentSetSize, ProportionalSetSizeKb, MemoryUsage, DiskUsage, StdoutMtime, StderrMtime, ScratchDirFileCount
+default=ImageSize, ExecutableSize, JobUniverse, NiceUser, CPUsUsage, ResidentSetSize, ProportionalSetSizeKb, MemoryUsage, DiskUsage, StdoutMtime, StderrMtime, ScratchDirFileCount, GPUsAverageUsage
 type=string
 customization=devel
 description=Job Attributes that must be copied into the STARTD ad for HTCondor to work correctly
@@ -2192,11 +2248,23 @@ type=string
 tags=submit
 usage=Set to YES, NO, or IF_NEEDED.  IF_NEEDED is used if this is empty or invalid
 
+[SUBMIT_DEFAULT_REQUIRE_COMMON_FILES]
+default=false
+type=bool
+tags=submit
+usage=Sets the default value for submit command require_common_files
+
 [SUBMIT_SEND_RESCHEDULE]
 default=false
 type=bool
 tags=submit
 description=Submit sends a RESCHEDULE command to schedd. Obsolete, use when Schedd version is before 26.0
+
+[SUBMIT_PREVENT_MULTI_QUEUE]
+default=true
+type=bool
+tags=submit
+description=Submit will stop at the first QUEUE statement and warn if it sees anything after it.
 
 [SUBMIT_PUBLISH_WINDOWS_OSVERSIONINFO]
 description=Submit should put attributes into jobs that show the Windows OSVERSIONINFO
@@ -3060,6 +3128,11 @@ default=false
 type=bool
 tags=negotiator,matchmaker
 
+[NEGOTIATOR_INFORM_STARTD_OF_BUNDLE_MATCH]
+default=false
+type=bool
+tags=negotiator,matchmaker
+
 [NEGOTIATOR_USE_NONBLOCKING_STARTD_CONTACT]
 default=true
 type=bool
@@ -3208,6 +3281,13 @@ default=$(SPOOL)/epoch_history
 type=string
 tags=tools,shadow
 
+[EPOCH_HISTORY_LOCK]
+default=$(LOCK)/_shadow_epoch_history.lock
+win32_default=$(LOCK)\_shadow_epoch_history.lock
+type=path
+description=Lock file the shadow holds while rotating epoch history files
+tags=shadow
+
 [SCHEDD_DAEMON_HISTORY]
 default=$(SPOOL)/schedd_daemon_history
 type=string
@@ -3306,7 +3386,7 @@ tags=schedd,qmgmt
 description=All users can edit other users jobs
 
 [SYSTEM_SECURE_JOB_ATTRS]
-default=x509userProxySubject x509UserProxyEmail x509UserProxyVOName x509UserProxyFirstFQAN x509UserProxyFQAN TotalSubmitProcs AuthTokenSubject AuthTokenIssuer AuthTokenGroups AuthTokenId AuthTokenScopes AuthTokenProject OsUser
+default=x509userProxySubject x509UserProxyEmail x509UserProxyVOName x509UserProxyFirstFQAN x509UserProxyFQAN TotalSubmitProcs AuthTokenSubject AuthTokenIssuer AuthTokenGroups AuthTokenId AuthTokenScopes AuthTokenProject OsUser IsOCUHolder
 type=string
 customization=devel
 description=System defined list of job attributes that only the Schedd can change
@@ -3326,7 +3406,7 @@ description=Silently ignore attempts to set SECURE_JOB_ATTRS
 Usage=Set this to false if you want submits to fail rather than have attempts to set SECURE_JOB_ATTRS be ignored
 
 [SYSTEM_IMMUTABLE_JOB_ATTRS]
-default=Owner ClusterId JobUniverse ProcId MyType TargetType User OsUser
+default=Owner ClusterId JobUniverse ProcId MyType TargetType User OsUser WantParallelScheduling
 type=string
 customization=devel
 description=System defined list of job attributes that may not change once set
@@ -4173,6 +4253,14 @@ type=string
 description=HPC annex collector's token domain (i.e. the domain in annex collector tokens' sub claim)
 tags=annex
 
+[ANNEX_RESTRICT_JOB_DEFAULT]
+default=true
+type=bool
+
+[ANNEX_USE_OLD_CREATE]
+default=False
+type=bool
+
 [SCHEDD]
 default=$(SBIN)/condor_schedd
 win32_default=$(SBIN)\condor_schedd.exe
@@ -4405,6 +4493,13 @@ type=int
 description=How long (in seconds) a CCB server (broker) waits for the target of a streaming (proxy) request to connect back and be spliced before abandoning the half-open session, freeing the requester's socket, and reporting a failure. This bounds only the handshake; once the relay is established it has no idle timeout. Set to 0 to disable handshake reaping.
 tags=ccb
 
+[CCB_TUNNEL_REGISTRATION_TIMEOUT]
+default=300
+version=25.12.0
+type=int
+description=How long (in seconds) a tunneling inside CCB will hold a registrant's CCB_REGISTER reply while waiting to complete its own upstream registration. Replies are deferred so a registrant only ever learns a reachable, nested tunnel contact; if the tunnel does not come up within this time, the broker disconnects the waiting registrant, which reconnects and re-registers after CCB_RECONNECT_TIME. Set to 0 to wait indefinitely.
+tags=ccb
+
 [CCB_SERVER_MAX_STREAMING_SESSIONS]
 default=0
 version=25.12.0
@@ -4424,6 +4519,55 @@ default=true
 version=25.12.0
 type=bool
 description=When true, a daemon that is itself behind a CCB will attempt to reach another CCB-routed (private) peer by asking a streaming-capable broker to proxy the connection, instead of giving up. The attempt is only made when the broker advertises support, so this is safe to leave enabled.
+tags=ccb
+
+[OUTBOUND_CCB_ADDRESS]
+default=
+version=25.13.0
+type=string
+description=When set, this daemon or tool routes its outbound connections through the named CCB broker instead of dialing targets directly: it asks the broker to dial the target on its behalf and splice the two connections into a transparent relay, over which the normal end-to-end CEDAR handshake proceeds. Intended for hosts (such as HPC worker nodes) that cannot make direct outbound TCP connections. Like CCB_ADDRESS, this may be a space-separated list of brokers, which are tried in randomized order for failover and load-balancing. Loopback and same-host targets are still connected directly. Unlike CCB_ADDRESS, this concerns making outbound connections rather than being reachable, so it embeds no CCBID into this daemon's address. If CCB_ADDRESS is not set, a daemon defaults its inbound CCB to this value as well: a host that cannot dial out directly usually cannot be dialed either, and the same broker serves both directions. Set CCB_ADDRESS explicitly to override.
+tags=ccb
+
+[CCB_OUTBOUND_PROXY]
+default=false
+version=25.13.0
+type=bool
+description=When true, this CCB server (broker) will act as an outbound proxy: on an authorized CCB_PROXY_CONNECT request it dials the requested target and splices the two sockets into a transparent relay. Because this makes the broker an outbound proxy, it is disabled by default and is gated by DAEMON authorization and CCB_OUTBOUND_TARGET_ALLOWLIST. This mode is also enabled implicitly on an inside CCB (one with CCB_OUTBOUND_NEXT_HOP set), which is a forwarding outbound proxy by definition; such a broker only ever forwards to its configured next hop, so it needs no allow-list of its own.
+tags=ccb
+
+[CCB_OUTBOUND_TARGET_ALLOWLIST]
+default=*
+version=25.13.0
+type=string
+description=Comma or space separated list of host or CIDR patterns a CCB server's outbound proxy (CCB_OUTBOUND_PROXY) is permitted to dial. Host patterns may use wildcards (for example *.example.com), matched case-insensitively; an IP target may also match a CIDR/network entry. The default of a single asterisk permits every target not excluded by CCB_OUTBOUND_TARGET_DENYLIST; an empty list permits nothing. The deny-list is consulted first, so it takes precedence.
+tags=ccb
+
+[CCB_OUTBOUND_TARGET_DENYLIST]
+default=127.0.0.0/8 ::1 fe80::/10 169.254.0.0/16 localhost
+version=25.13.0
+type=string
+description=Comma or space separated list of host or CIDR patterns a CCB server's outbound proxy (CCB_OUTBOUND_PROXY) will refuse to dial, even when CCB_OUTBOUND_TARGET_ALLOWLIST would permit them. Uses the same wildcard/CIDR matching as the allow-list. The default refuses loopback and link-local targets, so the broker cannot be used to reach services bound to its own host (an SSRF guard); it is exposed here as an overridable default rather than hard-coded so it is visible via condor_config_val.
+tags=ccb
+
+[CCB_OUTBOUND_TTL]
+default=8
+version=25.13.0
+type=int
+description=Time-to-live for an outbound-proxy (CCB_PROXY_CONNECT) request, set by the originating daemon or tool. Each broker that forwards the request to its next hop decrements the TTL and refuses once it reaches zero, bounding the chain length (and catching next-hop loops) at the originator rather than at any intermediate broker. Rarely needs changing.
+tags=ccb
+
+[CCB_OUTBOUND_NEXT_HOP]
+default=
+version=25.13.0
+type=string
+description=When set, this CCB server (an inside broker in a tunnel) registers with the named next-hop (outside) broker so it is itself reachable through the tunnel, and stamps the resulting tunnel address into the CCBIDs it hands out so inbound connections to its local registrants route through both brokers. Also selects the next-hop transport for outbound proxying. In most deployments this is set automatically by the condor_master (see USE_OUTBOUND_CCB) and rarely needs to be configured by hand.
+tags=ccb
+
+[USE_OUTBOUND_CCB]
+default=false
+version=25.13.0
+type=bool
+description=When true, the condor_master runs a local collector as an inside CCB (adding COLLECTOR to DAEMON_LIST if absent), waits for it to register with the next-hop broker named by CCB_OUTBOUND_NEXT_HOP and signal readiness, and then points the other daemons it starts at that local collector for both directions: as their CCB_ADDRESS (so their inbound connections route through the tunnel, with their advertised contacts stamped with the tunnel address by the inside CCB) and as their OUTBOUND_CCB_ADDRESS (so their outbound connections tunnel through it too). A node that cannot dial out directly is thus fully tunneled from this single knob. Analogous to USE_SHARED_PORT.
 tags=ccb
 
 [ROOSTER_INTERVAL]
@@ -4465,6 +4609,11 @@ tags=procd
 [SHADOW_WORKLIFE]
 default=3600
 version=7.5.3
+type=int
+tags=shadow
+
+[DEACTIVATE_CLAIM_TIMEOUT]
+default=20
 type=int
 tags=shadow
 
@@ -4751,6 +4900,11 @@ tags=schedd,startd,claim
 default=false
 type=bool
 
+[ENABLE_SLOT_BUNDLES]
+default=false
+type=bool
+tags=schedd
+
 [MAX_PARTITIONABLE_SLOT_CLAIM_TIME]
 default=3600
 type=int
@@ -4857,7 +5011,7 @@ default : @fin
 @fin
 
 [MODIFY_REQUEST_EXPR_REQUESTDISK]
-default=quantize(RequestDisk - $(CATALOG_SPACE),{Target.DiskQuantum?:1024})
+default=quantize(RequestDisk, {Target.DiskQuantum ?: 1024})
 version=24.12.18
 type=string
 description=Default modification to a disk resource request
@@ -5060,6 +5214,12 @@ type=string
 description=When CGROUP_MEMORY_LIMIT_POLICY is custom, sets the cgroup low limit
 tags=starter
 
+[CGROUP_ZSWAP_MAX_EXPR]
+default=
+type=string
+description=A classad expression, evaluated in the context of the slot and job ad, which sets the job's cgroup memory.zswap.max limit in megabytes.  When unset, HTCondor does not write to memory.zswap.max
+tags=starter
+
 [CGROUP_IGNORE_CACHE_MEMORY]
 type=bool
 default=true
@@ -5132,99 +5292,196 @@ tags=starter
 default=
 type=string
 description=Path to the Ganglia gmetric Executable
-tags=condor_config
+tags=metricd
 
 [GANGLIA_LIB]
 default=
 type=string
 description=Ganglia Library
-tags=condor_config
+tags=metricd
 
 [GANGLIA_LIB_PATH]
 default=/lib,/usr/lib,/usr/local/lib
 type=string
 description=Ganglia Library Search Path
-tags=condor_config
+tags=metricd
 
 [GANGLIA_LIB64_PATH]
 default=/lib64,/usr/lib64,/usr/local/lib64
 type=string
 description=Ganglia 64-bit Library Search Path
-tags=condor_config
+tags=metricd
 
 [GANGLIA_CONFIG]
 default=/etc/ganglia/gmond.conf
 type=string
 description=Path to the Ganglia Configuration file
-tags=condor_config
+tags=metricd
 
 [GANGLIA_GSTAT_COMMAND]
 default=gstat --all --mpifile --gmond_ip=localhost --gmond_port=8649
 type=string
-tags=condor_config
+tags=metricd
+
+[GANGLIA_SEND_DATA_FOR_ALL_HOSTS]
+default=false
+type=bool
+description=Send metrics for all hosts to Ganglia
+tags=metricd
 
 [GANGLIAD_WANT_PROJECTION]
 default=true
 type=bool
 description=Should gangliad use an attribute projection to query the collector
-tags=gangliad
+tags=gangliad,deprecated
+
+[METRICD_WANT_PROJECTION]
+default=true
+type=bool
+description=Should metricd use an attribute projection to query the collector
+tags=metricd
 
 [GANGLIAD_RESET_METRICS_FILE]
 default=$(SPOOL)/metricsToReset.ganglia_metrics
 type=path
 description=Path to filename where gangliad stores state
-tags=gangliad
+tags=gangliad,deprecated
+
+[GANGLIA_RESET_METRICS_FILE]
+default=$(SPOOL)/metricsToReset.ganglia_metrics
+type=path
+description=Path to filename where metricd stores state about ganglia metrics to reset
+tags=metricd
 
 [GANGLIAD_WANT_RESET_METRICS]
 default=false
 type=bool
 description=Should gangliad reset aggregate metrics to zero on restart
-tags=gangliad
+tags=gangliad,deprecated
+
+[GANGLIA_WANT_RESET_METRICS]
+default=true
+type=bool
+description=Should metricd reset aggregate ganglia metrics to zero on restart
+tags=metricd
 
 [GANGLIAD_METRICS_CONFIG_DIR]
 default=$(ETC)/ganglia.d
 type=path
-description=Ganglia metric config dir
-tags=condor_config
+description=GangliaD config dir for metric definitions
+tags=gangliad,deprecated
+
+[METRICD_METRICS_CONFIG_DIR]
+default=$(ETC)/metrics.d
+type=path
+description=MetricD config dir for metric definitions
+tags=metricd
 
 [GANGLIAD_VERBOSITY]
 default=0
 type=int
 description=Ganglia Verbosity
-tags=condor_config
+tags=gangliad,deprecated
+
+[METRICD_VERBOSITY]
+default=0
+type=int
+description=MetricD Verbosity
+tags=metricd
 
 [GANGLIAD_INTERVAL]
 default=60
 type=int
 description=Ganglia Interval
-tags=condor_config
+tags=gangliad,deprecated
+
+[METRICD_INTERVAL]
+default=60
+type=int
+description=MetricD Interval
+tags=metricd
 
 [GANGLIAD_LOG]
 default=$(LOG)/GangliadLog
 type=path
-tags=gangliad
+tags=gangliad,deprecated
+
+[METRICD_LOG]
+default=$(LOG)/MetricdLog
+type=path
+tags=metricd
 
 [MAX_GANGLIAD_LOG]
 default=$(MAX_DEFAULT_LOG)
-tags=gangliad
+tags=gangliad,deprecated
+
+[MAX_METRICD_LOG]
+default=$(MAX_DEFAULT_LOG)
+tags=metricd
 
 [GANGLIAD_REQUIREMENTS]
 default=
 type=string
-description=Requirements to be met by all ads monitored by Ganglia
-tags=gangliad
+description=Requirements to be met by all ads monitored by GangliaD
+tags=gangliad,deprecated
+
+[METRICD_REQUIREMENTS]
+default=
+type=string
+description=Requirements to be met by all ads monitored by MetricD
+tags=metricd
 
 [GANGLIAD_PER_EXECUTE_NODE_METRICS]
 default=true
 type=bool
-description=Publish Ganglia metrics for individual execute nodes
-tags=gangliad
+description=Have GangliaD publish metrics for individual execute nodes
+tags=gangliad,deprecated
 
-[GANGLIA_SEND_DATA_FOR_ALL_HOSTS]
-default=false
+[METRICD_PER_EXECUTE_NODE_METRICS]
+default=true
 type=bool
-description=Send Ganglia metrics for all hosts
-tags=gangliad
+description=Have MetricD publish metrics for individual execute nodes
+tags=metricd
+
+[PROMETHEUS_METRICS_FILE]
+default=$(LOG)/metrics.prom
+type=path
+description=Path used by the MetricD to write a file containing metrics in Prometheus text exposition format
+tags=metricd
+
+[PROMETHEUS_METRICS_INCLUDE_TIMESTAMP]
+default=true
+type=bool
+description=Should metrics exported to Prometheus include the optional millisecond timestamp
+tags=metricd
+
+[PROMETHEUS_DEFAULT_LABELS]
+default=[machine=MetricMachine; pool=MetricPool]
+description=Default set of labels for exported Prometheus metrics
+tags=metricd
+
+[PROMETHEUS_HTTP_AUTH_FILE]
+default=
+type=path
+description=Path to an htpasswd file used to control access to read Prometheus metrics over HTTP
+tags=metricd
+
+[PROMETHEUS_HTTP_PORT]
+default=$(SHARED_PORT_PORT)
+type=int
+description=Port used by metricd to accept incoming HTTP connections for /metrics endpoint; -1 means disable
+tags=metricd
+
+[PROMETHEUS_HTTP_LOCALHOST_ONLY]
+default=true
+type=bool
+description=Should the dedicated /metrics listen socket bind only to the loopback address; consulted only when PROMETHEUS_HTTP_PORT names a port other than SHARED_PORT_PORT
+tags=metricd
+
+[METRICD_DEFAULT_EXPORT_METRIC]
+default=prometheus
+description=Default value for ExportMetric, a comma-seperated list of time-series database backends
+tags=metricd
 
 [MAX_CONCURRENT_DOWNLOADS]
 default=100
@@ -5237,7 +5494,7 @@ type=int
 range=0,
 
 [MAX_CONCURRENT_UPLOADS_PER_USER]
-default=$(MAX_CONCURRENT_UPLOADS:100)/5
+default=($(MAX_CONCURRENT_UPLOADS:0))/5
 type=int
 range=0,
 
@@ -5602,13 +5859,13 @@ version=8.2.8
 type=string
 description=When a slot should be in Owner state
 
-[STASH_PLUGIN]
-default=$(LIBEXEC)/stash_plugin
-description=Full path to the stash/osdf/Pelican plugin
+[PELICAN_PLUGIN]
+default=$(LIBEXEC)/pelican_plugin
+description=Full path to the OSDF/Pelican plugin
 type=path
 
 [FILETRANSFER_PLUGINS]
-default=$(LIBEXEC)/curl_plugin, $(LIBEXEC)/data_plugin, $(LIBEXEC)/box_plugin.py, $(LIBEXEC)/gdrive_plugin.py, $(LIBEXEC)/onedrive_plugin.py, $(STASH_PLUGIN)
+default=$(LIBEXEC)/curl_plugin, $(LIBEXEC)/data_plugin, $(LIBEXEC)/box_plugin.py, $(LIBEXEC)/gdrive_plugin.py, $(LIBEXEC)/onedrive_plugin.py, $(PELICAN_PLUGIN)
 win32_default=$(LIBEXEC)\curl_plugin.exe, $(LIBEXEC)\data_plugin.exe, $(LIBEXEC)\box_plugin.py, $(LIBEXEC)/gdrive_plugin.py, $(LIBEXEC)/onedrive_plugin.py
 description=List of paths to installed file transfer plugins
 tags=startd
@@ -5979,6 +6236,12 @@ type=bool
 description=Allow underscores and other non-alphanumeric/hyphen characters in token provider names (disables user-supplied credential handles)
 
 # Archive librarian configuration options
+[LIBRARIAN_ADDRESS_FILE]
+default=$(LOG)/.librarian_address
+type=path
+description=Path to the archive librarian address file
+tags=librarian
+
 [LIBRARIAN]
 default=$(SBIN)/condor_librarian
 win32_default=$(SBIN)\condor_librarian.exe
@@ -6022,6 +6285,12 @@ default=1800
 type=int
 range=0,
 description=How long, in seconds, the archive librarian waits before retrying garbage collection after a pass that did not shrink the database file.
+tags=librarian
+
+[LIBRARIAN_USER_RETENTION_DAYS]
+default=365
+type=int
+description=Days the archive librarian keeps a user with no remaining indexed jobs before garbage collection removes it. 0 removes immediately, negative never removes.
 tags=librarian
 
 [LIBRARIAN_MAX_DATABASE_SIZE]
@@ -6393,7 +6662,7 @@ default=250
 [ADSTASH_SE_INDEX_NAME]
 description=What search engine index should condor_adstash push ads to
 type=string
-default=htcondor-000001
+default=htcondor
 [ADSTASH_SE_LOG_MAPPINGS]
 description=Should condor_adstash log mappings used with search engine interfaces
 type=bool
@@ -6781,7 +7050,7 @@ default : @end
   # universe jobs can't go over their disk allocations, so
   # we ignore them.
   #
-  DISK_EXCEEDED = (JobUniverse != 13 && DiskUsage =!= UNDEFINED && DiskUsage > Disk)
+  DISK_EXCEEDED = (JobUniverse != 13 && MY.IsDataSlot ?: false && DiskUsage =!= UNDEFINED && DiskUsage > Disk)
   HOLD_REASON_DISK_EXCEEDED = disk usage exceeded allocated disk
   use POLICY : WANT_HOLD_IF( DISK_EXCEEDED, $(HOLD_SUBCODE_DISK_EXCEEDED:104), $(HOLD_REASON_DISK_EXCEEDED) )
 @end
@@ -7237,7 +7506,7 @@ use role:execute
 @end
 
 ##
-## Version-specific knobx.
+## Version-specific knobs.
 ##
 [$SECURITY.recommended_v9_0]
 description = default security config for 9.0 and later args:([service [, admins]])
@@ -7572,37 +7841,23 @@ default : @fin
 	JOB_TRANSFORM_NAMES = $(JOB_TRANSFORM_NAMES) AssignAnnex
 	JOB_TRANSFORM_AssignAnnex @=end
 		REQUIREMENTS TargetAnnexName =!= undefined
-		my_identity = "$(MY.Owner)@$(ANNEX_TOKEN_DOMAIN)"
-		addl_reqs = ifThenElse(TARGET.AuthenticatedIdentity is undefined, true, $(my_identity) == TARGET.AuthenticatedIdentity) && (MY.TargetAnnexName == TARGET.AnnexName)
-		if defined MY.JobMachineAttrs
-			SET JobMachineAttrs "$(MY.JobMachineAttrs),AnnexName"
+		if defined MY.RestrictToAnnex
+			restrict_to_annex = $(MY.RestrictToAnnex)
 		else
-			SET JobMachineAttrs "AnnexName"
+			restrict_to_annex = $(ANNEX_RESTRICT_JOB_DEFAULT)
 		endif
-		if defined MY.Requirements
-			SET Requirements $(addl_reqs) && ($(MY.Requirements))
+		# AuthenticatedIdentity is present in the AP's copy of the
+		# slot ad, but not in the EP's copy. So if it's missing,
+		# treat that as a match.
+		restrict_expr = (MY.TargetAnnexName == TARGET.AnnexName && (MY.User == TARGET.AuthenticateIdentity)?:true)
+		if $(restrict_to_annex)
+			addl_reqs = $(restrict_expr)
 		else
-			SET Requirements $(addl_reqs)
+			addl_reqs = (TARGET.AnnexName is Undefined || $(restrict_expr))
 		endif
+		SET Requirements $(addl_reqs) && ($(MY.Requirements))
+		SET JobMachineAttrs "$(MY.JobMachineAttrs),AnnexName"
 	@end
-
-	# The schedd will not try to activate a directly-connected claim
-	# with a job whose owner is not the authenticated identity of the
-	# directly-connected EP.  This limits the damage that can be done
-	# by a misconfigured EP to only running the annex owner's other
-	# jobs, which I think no long justifies tranforming all other jobs.
-	if $(ANNEX_JOBS_EXCLUSIVELY:FALSE)
-		JOB_TRANSFORM_NAMES = $(JOB_TRANSFORM_NAMES) AnnexJobsExclusively
-		JOB_TRANSFORM_AnnexJobsExclusively @=end
-			REQUIREMENTS TargetAnnexName =?= undefined
-			addl_reqs = ifThenElse(TARGET.AuthenticatedIdentity is undefined, true, regexp("^condor(_pool)?@.*$", TARGET.AuthenticatedIdentity))
-			if defined MY.Requirements
-				SET Requirements $(addl_reqs) && ($(MY.Requirements))
-			else
-				SET Requirements $(addl_reqs)
-			endif
-		@end
-	endif
 @fin
 
 [AUTO_USE_FEATURE_PelicanRetryPolicy]
@@ -7655,10 +7910,24 @@ default : @fin
 @fin
 
 [$FEATURE.GANGLIA]
-description=Enable condor_gangliad daemon
+description=Enable condor_gangliad daemon (deprecated - concert to using metricd)
 default : @end
 	DAEMON_LIST=$(DAEMON_LIST) GANGLIAD
 @end
+
+
+[$FEATURE.METRICD]
+description=Enable condor_metricd daemon
+default : @end
+	DAEMON_LIST=$(DAEMON_LIST) METRICD
+	metricd_port_is_shared_port = $(PROMETHEUS_HTTP_PORT:0) == $(SHARED_PORT_PORT:0)
+	if $INT(metricd_port_is_shared_port)
+		METRICD_ARGS=-sock metricd
+		SHARED_PORT_HTTP_FORWARDING_ID=metricd
+	endif
+@end
+
+
 
 [$FEATURE.DefaultCheckpointDestination]
 description=Use a job transform so the admin can set a default (other than SPOOL) for checkpoint storage.

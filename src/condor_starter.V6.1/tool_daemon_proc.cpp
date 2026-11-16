@@ -256,17 +256,9 @@ ToolDaemonProc::StartJob()
 	// daemon's process family
 	//
 	FamilyInfo fi;
-	fi.max_snapshot_interval = 15;
-	m_dedicated_account = NULL;
-	if (job_universe != CONDOR_UNIVERSE_LOCAL) {
-		m_dedicated_account = starter->jic->getExecuteAccountIsDedicated();
-	}
-	if (m_dedicated_account) {
-		fi.login = m_dedicated_account;
-		dprintf(D_FULLDEBUG,
-		        "Tracking process family by login \"%s\"\n",
-		        fi.login);
-	}
+	int64_t mem_limit=0; // dummy
+	starter->SetupProcessTracking(fi, this, mem_limit);
+	if (job_universe == CONDOR_UNIVERSE_LOCAL) { fi.login = nullptr; }
 
 	std::string args_string;
 	DaemonArgs.GetArgsStringForDisplay(args_string);
@@ -278,7 +270,6 @@ ToolDaemonProc::StartJob()
 	OptionalCreateProcessArgs cpArgs(create_process_err_msg);
 	JobPid = daemonCore->CreateProcessNew( DaemonName, DaemonArgs,
 		 cpArgs.priv(PRIV_USER_FINAL)
-		.wantCommandPort(FALSE).wantUDPCommandPort(FALSE)
 		.env(&job_env).cwd(job_iwd).familyInfo(&fi)
 		.std(fds).niceInc(nice_inc).jobOptMask(DCJOBOPT_NO_ENV_INHERIT)
 	);
@@ -310,6 +301,8 @@ ToolDaemonProc::StartJob()
 		return FALSE;
 
 	} else {
+		starter->ReportProcessTracking(fi, this);
+
 		dprintf( D_ALWAYS, "Create_Process succeeded, pid=%d\n", JobPid );
 
 		condor_gettimestamp( job_start_time );

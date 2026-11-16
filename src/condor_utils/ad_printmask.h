@@ -99,7 +99,7 @@ struct Formatter
 	int        width;		 // 0 for 'width from printf'
 	int        options;      // one or more of Formatter_Opt_XXX options
 	char       fmt_letter;   // actual letter in the % escape
-	char       fmt_type;     // one of the the printf_fmt_t enum values.
+	signed char fmt_type;    // one of the the printf_fmt_t enum values (signed: PFT_CRASH is -1).
 	char       fmtKind;      // identifies type type of the union
 	char       altKind;      // identifies type of alt text to print when attribute cannot be fetched
 	const char * printfFmt;    // may be NULL if fmtKind != PRINTF_FMT
@@ -148,7 +148,7 @@ class AttrListPrintMask
 	// clear all formats
 	void clearFormats (void);
 	bool IsEmpty(void) { return formats.empty(); }
-	int  ColCount(void) { return formats.size(); }
+	int  ColCount(void) { return static_cast<int>(formats.size()); }
 
 	// for debugging, dump the current config
 	void dump(std::string & out, const CustomFormatFnTable * pFnTable, std::vector<const char *> * pheadings=NULL);

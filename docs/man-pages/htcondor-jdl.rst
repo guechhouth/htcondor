@@ -286,6 +286,15 @@ BASIC COMMANDS
     overridden by specifying the **-batch-name** argument on the
     *condor_submit* command line.
 
+ :subcom-def:`batch_id` = <id>
+    Set the :ad-attr:`JobBatchId` for this submit. This is a unique
+    number represented as a string identifying a batch across jobs.
+
+    .. note::
+
+        This is intended for use by :tool:`condor_dagman` to represent
+        the root DAGMan job by its :ad-attr:`ClusterId`.
+
  :subcom-def:`getenv` = <<matchlist> | True | False>
     If **getenv** is set to
     :index:`copying current environment<single: copying current environment; environment variables>`\ ``True``,
@@ -602,9 +611,11 @@ COMMANDS FOR MATCHMAKING
     resulting in a dynamic slot being created with this many cores.
 
  :subcom-def:`request_disk` = <quantity>
-    The requested amount of disk space in KiB requested for this job. If
-    not specified, it will be set to the job ClassAd attribute
-    :ad-attr:`DiskUsage`. The expression
+    The requested amount of disk space in KiB requested for this job.
+    If not specified, and the job universe is not Scheduler or Local, the value is set
+    by the configuration variable :macro:`JOB_DEFAULT_REQUESTDISK`.
+
+    The expression
 
     .. code-block:: condor-classad-expr
 
@@ -636,7 +647,8 @@ COMMANDS FOR MATCHMAKING
 
 
  :subcom-def:`request_memory` = <quantity>
-    The amount of memory this job needs in Mb. If not specified, the value is set 
+    The amount of memory this job needs in Mb. If not specified, and the job universe
+    is not Scheduler or Local, the value is set
     by the configuration variable :macro:`JOB_DEFAULT_REQUESTMEMORY`.
     The actual amount of memory used by a job is represented by the job ClassAd attribute
     :ad-attr:`MemoryUsage`.
@@ -678,7 +690,7 @@ COMMANDS FOR MATCHMAKING
     but occasionally needs a larger amount of memory, this command will
     allow the majority of jobs to match with smaller memory slots, and perhaps
     allow more of them to match and start, without wasting the larger amount
-    of memory only seldomly needed.  So, if most jobs in a cluster can
+    of memory only seldom needed.  So, if most jobs in a cluster can
     run with 1 GB of memory, but some need 4 GB, then a submit file with:
 
     .. code-block:: condor-submit
@@ -753,7 +765,6 @@ COMMANDS FOR MATCHMAKING
     the constraint will be tested against the properties of AvailableGPUs and only those that match
     will be assigned to the dynamic slot.
 
-    :subcom-def:`request_GPUs`
     :index:`requesting GPUs for a job<single: requesting GPUs for a job; GPUs>`
  :subcom-def:`request_<name>` = <quantity>
     The required amount of the custom machine resource identified by
@@ -764,14 +775,14 @@ COMMANDS FOR MATCHMAKING
     If ``<name>`` is either ``Cpu`` or ``Gpu`` a warning will be printed since these are common typos.
 
  :subcom-def:`gpus_minimum_capability` = <version> :subcom-def:`gpus_maximum_capability` = <version>
-    The mininum or maximum required Capability value of the GPU, inclusive. Specified
+    The minimum or maximum required Capability value of the GPU, inclusive. Specified
     as a floating point value (for example ``8.5``).
     Use of one or more of these commands will create or modify the :subcom:`require_gpus` expression
     unless that expression already references the GPU property ``Capabilities``.
     When :subcom:`request_gpus` is not used, these commands are ignored.
 
  :subcom-def:`gpus_minimum_memory` = <quantity>
-    The mininum quantity of GPU memory in MiB that a GPU must have in order to run the job.
+    The minimum quantity of GPU memory in MiB that a GPU must have in order to run the job.
 
     Characters may be appended to a numerical value to indicate units.
     ``K`` or ``KB`` indicates KiB, 2\ ^ 10 numbers of bytes. ``M``
@@ -847,6 +858,17 @@ COMMANDS FOR MATCHMAKING
     *condor_q -l*; see the command reference for :doc:`/man-pages/condor_q`.
     Also, see the HTCondor Users Manual for complete information on the syntax
     and available attributes that can be used in the ClassAd expression.
+
+ :subcom-def:`annex_name` = <name>
+    Indicates that these jobs are intended to run on EPs of the named annex.
+    The annex EPs need to be provisioned using the *htcondor annex create*
+    command.
+
+ :subcom-def:`restrict_to_annex` = <True | False>
+    For jobs connected to an annex, this specifies whether the jobs can run
+    only on annex EPs or may also run on non-annex EPs.
+    The default is set by configuration parameter
+    :macro:`ANNEX_RESTRICT_JOB_DEFAULT`, whose default is True.
 
 FILE TRANSFER COMMANDS
 
@@ -1173,6 +1195,17 @@ FILE TRANSFER COMMANDS
     Note that (at present), you may not provide more than one set of
     credentials for ``s3://`` or ``gs://`` file transfer; this implies
     that all such URLs download from or upload to the same service.
+
+ :subcom-def:`transfer_common_input` = < file1,file2,file... >
+    As :subcom:`transfer_input_files`, except that the specified files or URLS
+    are common across more than one job.  See :ref:`common_file_transfer`.
+
+ :subcom-def:`require_common_files` = <True | False>
+    When ``True`` and the job uses :subcom:`transfer_common_input`, the job
+    will only match execution points that support common file transfer.
+    The default is the value of
+    configuration variable :macro:`SUBMIT_DEFAULT_REQUIRE_COMMON_FILES`,
+    which defaults to ``False``.
 
  :subcom-def:`public_input_files` = <file, file2>
     A list of files on the AP that HTCondor should use a pre-configured
@@ -1710,10 +1743,25 @@ COMMANDS FOR THE GRID
     For grid type **azure** jobs, the hardware configuration that the
     virtual machine instance is to run on.
 
+ :subcom-def:`batch_cpu_count` = <count>
+    Used for **batch** grid universe jobs.
+    Specifies the total number of cpus to request for the
+    PBS/LSF/SGE/SLURM job.
+
+ :subcom-def:`batch_cpus_per_node` = <count>
+    Used for **batch** grid universe jobs.
+    Specifies how many cpus on each machine to request for the
+    PBS/LSF/SGE/SLURM job.
+
  :subcom-def:`batch_extra_submit_args` = <command-line arguments>
     Used for **batch** grid universe jobs.
     Specifies additional command-line arguments to be given to the target
     batch system's job submission command.
+
+ :subcom-def:`batch_node_count` = <count>
+    Used for **batch** grid universe jobs.
+    Specifies the number of machines requested for the
+    PBS/LSF/SGE/SLURM job.
 
  :subcom-def:`batch_project` = <projectname>
     Used for **batch** grid universe jobs.
@@ -1733,6 +1781,12 @@ COMMANDS FOR THE GRID
     Used for **batch** grid universe jobs.
     Specifies a limit in seconds on the execution time of the job.
     This limit is enforced by the PBS/LSF/SGE/SLURM scheduler.
+
+ :subcom-def:`batch_whole_nodes` = <True | False>
+    Used for **batch** grid universe jobs.
+    Specifies whether the PBS/LSF/SGE/SLURM job must run on machines
+    with no other jobs. The default is False (the job can share
+    machines with other jobs).
 
  :subcom-def:`cloud_label_names` = <name0,name1,name...>
     For grid type **gce** jobs, specifies the case of tag names that
@@ -2556,6 +2610,16 @@ ADVANCED COMMANDS
 
     This feature is not presently available for Windows.
 
+ :subcom-def:`min_condor_version` = <x.y.z version string>
+    To aid in debugging; adds a requirement that the HTCondor version of the
+    EP this job runs on is greater than or equal to the version string
+    (e.g., ``26.1.1``).
+
+ :subcom-def:`max_condor_version` = <x.y.z version string>
+    To aid in debugging; adds a requirement that the HTCondor version of the
+    EP this job runs on is strictly less than the version string
+    (e.g., ``26.1.1``).
+
  :subcom-def:`max_job_retirement_time` = <integer expression>
     An integer-valued expression (in seconds) that does nothing unless
     the machine that runs the job has been configured to provide
@@ -2644,6 +2708,13 @@ ADVANCED COMMANDS
    If **false** then the job may be matched to a machine where the job
    has no access to the networking.  This may allow the job to run in
    more places than it otherwise would. Default is true.
+
+ :subcom-def:`want_io_proxy` = <True | False>
+    When ``True``, the *condor_starter* runs an I/O proxy for the job, which
+    allows the job to use :tool:`condor_chirp` to access files on the access
+    point and to read and write the job ClassAd. Sets job ClassAd attribute
+    ``WantIOProxy``. The default is ``False``. See
+    :doc:`../users-manual/chirp`.
 
  :subcom-def:`run_as_owner` = <True | False>
     A boolean value that causes the job to be run under the login of the

@@ -1346,7 +1346,7 @@ bail_out:
 }
 
 int
-cred_get_cred_handler(int /*i*/, Stream *s)
+cred_get_cred_handler(int /*i*/, Stream *s, const char *job_owner)
 {
 	char *client_user = NULL;
 	char *client_domain = NULL;
@@ -1427,6 +1427,18 @@ cred_get_cred_handler(int /*i*/, Stream *s)
 	client_user = strdup(sock->getOwner());
 	client_domain = strdup(sock->getDomain());
 	client_ipaddr = strdup(sock->peer_addr().to_sinful().c_str());
+
+	// The peer is only authorized as a daemon, which may be an untrusted
+	// EP (e.g. a glidein).  Only send the credential of the job's owner,
+	// never that of whatever user the peer names.
+	if (!job_owner || !*job_owner || strcmp(user, job_owner) != MATCH) {
+		dprintf(D_ALWAYS,
+			"WARNING - refusing to fetch cred for %s@%s requested by %s@%s at %s: "
+			"not the job owner (%s)\n",
+			user, domain, client_user, client_domain, client_ipaddr,
+			job_owner ? job_owner : "(none)");
+		goto bail_out;
+	}
 
 	// Now fetch the password from the secure store --
 	// If not LocalSystem, this step will fail.
@@ -2785,6 +2797,13 @@ void CredSorter::Init()
 			m_vault_names.clear();
 		}
 	}
+	// Pelican services must be enumerated explicitly; unlike Vault, an empty or
+	// unset list means there are no Pelican services (no wildcard).  Naming a
+	// service here keeps the Vault wildcard below from claiming it, and lets the
+	// submit side tell the storer to run in Pelican mode.
+	if (!param(m_pelican_names, "PELICAN_CREDMON_PROVIDER_NAMES")) {
+		m_pelican_names.clear();
+	}
 	std::string storer;
 	if (param(storer, "SEC_CREDENTIAL_STORER")) {
 		m_vault_enabled = true;
@@ -2815,6 +2834,13 @@ CredSorter::CredType CredSorter::Sort(const std::string& cred_name) const
 			return VaultType;
 		}
 	}
+	// Explicitly-named Pelican services are claimed here, before the Vault
+	// wildcard below, so they are not misclassified as Vault.
+	for (const auto& str: StringTokenIterator(m_pelican_names)) {
+		if (cred_name == str) {
+			return PelicanType;
+		}
+	}
 	formatstr(param_name, "%s_CLIENT_ID", cred_name.c_str());
 	bool client_id_defined = param(param_val, param_name.c_str());
 	if (m_oauth2_names.empty() && client_id_defined) {
@@ -2824,4 +2850,13 @@ CredSorter::CredType CredSorter::Sort(const std::string& cred_name) const
 		return VaultType;
 	}
 	return UnknownType;
+}
+
+const char *CredSorter::StorerMode(CredType type)
+{
+	switch (type) {
+	case VaultType:   return "vault";
+	case PelicanType: return "pelican";
+	default:          return nullptr;
+	}
 }

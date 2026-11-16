@@ -1454,10 +1454,21 @@ init_daemon_list()
 			daemon_names.emplace_back("MASTER");
 		}
 
+			// If outbound-CCB tunneling is enabled, we need a local collector to
+			// act as the inside CCB.  Add it if absent (it is moved to the front
+			// below), mirroring USE_SHARED_PORT.
+		if( param_boolean("USE_OUTBOUND_CCB", false)
+			&& daemon_names.end() == std::ranges::find(daemon_names, std::string("COLLECTOR"))
+			&& param_boolean("AUTO_INCLUDE_COLLECTOR_IN_DAEMON_LIST",true) )
+		{
+			dprintf(D_ALWAYS,"Adding COLLECTOR to DAEMON_LIST to act as the local (inside) CCB, because USE_OUTBOUND_CCB=true (to disable this, set AUTO_INCLUDE_COLLECTOR_IN_DAEMON_LIST=False)\n");
+			daemon_names.emplace_back("COLLECTOR");
+		}
+
 
 			/*
 			  Make sure that if COLLECTOR is in the list, put it at
-			  the front... 
+			  the front...
 			*/
 		auto col_it = std::ranges::find(daemon_names, std::string("COLLECTOR"));
 		if (col_it != daemon_names.end()) {
@@ -1536,7 +1547,7 @@ init_daemon_list()
 	// then we need to let the SHARED_PORT daemon know that it should be using the configured collector port
 	// and not the configured shared port port
 	if (have_primary_collector) {
-		bool collector_uses_shared_port = param_boolean("COLLECTOR_USES_SHARED_PORT", true) && param_boolean("USE_SHARED_PORT", false);
+		bool collector_uses_shared_port = param_boolean("COLLECTOR_USES_SHARED_PORT", true) && param_boolean("USE_SHARED_PORT", true);
 		if (collector_uses_shared_port) {
 			class daemon* d = daemons.FindDaemon("SHARED_PORT");
 			if (d != NULL) {
@@ -1906,8 +1917,7 @@ run_preen_now()
 	preen_pid = daemonCore->CreateProcessNew(
 					FS_Preen,		// program to exec
 					arglist,   		// args
-					cpArgs.priv(PRIV_ROOT)		// privilege level
-					.wantCommandPort(false));	// we do _not_ want this process to have a command port; PREEN is not a daemon core process
+					cpArgs.priv(PRIV_ROOT));	// privilege level
 	dprintf( D_ALWAYS, "Preen pid is %d\n", preen_pid );
 	return TRUE;
 }
